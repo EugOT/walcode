@@ -1115,6 +1115,13 @@ fn build_chat_completion_request_for_base_url(
         payload[key] = value.clone();
     }
 
+    // DeepSeek V4 Pro/Flash thinking mode requires this provider-specific opt-in
+    // and also requires assistant reasoning history to be echoed as `reasoning_content`.
+    // Apply it after extra_body so callers cannot accidentally override the required shape.
+    if model_requires_reasoning_content_in_history(wire_model) {
+        payload["thinking"] = json!({"type": "enabled"});
+    }
+
     payload
 }
 
@@ -1172,16 +1179,19 @@ pub fn translate_message(message: &InputMessage, model: &str) -> Vec<Value> {
                     InputContentBlock::ToolResult { .. } => {}
                 }
             }
-            let include_reasoning =
-                model_requires_reasoning_content_in_history(model) && !reasoning.is_empty();
-            if text.is_empty() && tool_calls.is_empty() && !include_reasoning {
+            let needs_reasoning = model_requires_reasoning_content_in_history(model);
+            if text.is_empty() && tool_calls.is_empty() && reasoning.is_empty() {
                 Vec::new()
             } else {
                 let mut msg = serde_json::json!({
                     "role": "assistant",
-                    "content": (!text.is_empty()).then_some(text),
                 });
-                if include_reasoning {
+                if !text.is_empty() {
+                    msg["content"] = json!(text);
+                } else if !needs_reasoning {
+                    msg["content"] = Value::Null;
+                }
+                if needs_reasoning {
                     msg["reasoning_content"] = json!(reasoning);
                 }
                 // Only include tool_calls when non-empty: some providers reject
@@ -1797,6 +1807,31 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_v4_assistant_with_only_tool_calls_omits_content_and_includes_reasoning() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            max_tokens: 100,
+            messages: vec![InputMessage {
+                role: "assistant".to_string(),
+                content: vec![InputContentBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "get_weather".to_string(),
+                    input: json!({"city": "Paris"}),
+                }],
+            }],
+            stream: false,
+            ..Default::default()
+        };
+
+        let payload = build_chat_completion_request(&request, OpenAiCompatConfig::openai());
+        let assistant = &payload["messages"][0];
+
+        assert!(assistant.get("content").is_none());
+        assert_eq!(assistant["reasoning_content"], json!(""));
+        assert_eq!(assistant["tool_calls"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
     fn deepseek_v4_flash_request_includes_reasoning_content_for_assistant_history() {
         // Given an assistant history turn containing thinking.
         let request = assistant_history_with_thinking_request("deepseek-v4-flash");
@@ -1980,6 +2015,49 @@ mod tests {
             OpenAiCompatConfig::openai(),
         );
         assert_eq!(payload["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn deepseek_v4_request_includes_thinking_parameter() {
+        let payload = build_chat_completion_request(
+            &MessageRequest {
+                model: "deepseek-v4-pro".to_string(),
+                max_tokens: 1024,
+                messages: vec![InputMessage::user_text("hello")],
+                ..Default::default()
+            },
+            OpenAiCompatConfig::openai(),
+        );
+        assert_eq!(payload["thinking"], json!({"type": "enabled"}));
+        assert_eq!(payload["model"], json!("deepseek-v4-pro"));
+
+        let mut extra_body = BTreeMap::new();
+        extra_body.insert("thinking".to_string(), json!({"type": "disabled"}));
+        let payload_with_override = build_chat_completion_request(
+            &MessageRequest {
+                model: "openai/deepseek-v4-flash".to_string(),
+                max_tokens: 1024,
+                messages: vec![InputMessage::user_text("hello")],
+                extra_body,
+                ..Default::default()
+            },
+            OpenAiCompatConfig::openai(),
+        );
+        assert_eq!(
+            payload_with_override["thinking"],
+            json!({"type": "enabled"})
+        );
+
+        let non_deepseek_payload = build_chat_completion_request(
+            &MessageRequest {
+                model: "gpt-4o".to_string(),
+                max_tokens: 64,
+                messages: vec![InputMessage::user_text("hello")],
+                ..Default::default()
+            },
+            OpenAiCompatConfig::openai(),
+        );
+        assert!(non_deepseek_payload.get("thinking").is_none());
     }
 
     #[test]
