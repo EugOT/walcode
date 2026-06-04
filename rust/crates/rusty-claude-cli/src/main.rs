@@ -9238,7 +9238,8 @@ fn status_context(
 ) -> Result<StatusContext, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let loader = ConfigLoader::default_for(&cwd);
-    let discovered_config_files = loader.discover().len();
+    // #456: count only paths that exist on disk, matching check_config_health behavior.
+    let discovered_config_files = loader.discover().iter().filter(|e| e.path.exists()).count();
     // #143: degrade gracefully on config parse failure rather than hard-fail.
     // `claw doctor` already does this; `claw status` now matches that contract
     // so that one malformed `mcpServers.*` entry doesn't take down the whole
