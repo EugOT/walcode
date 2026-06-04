@@ -3690,6 +3690,7 @@ fn check_auth_health() -> DiagnosticCheck {
         .ok()
         .is_some_and(|value| !value.trim().is_empty());
     let any_auth_present = api_key_present || auth_token_present || openai_key_present;
+    let prompt_ready = any_auth_present;
     let env_details = format!(
         "Environment       api_key={} auth_token={} openai_key={}",
         if api_key_present { "present" } else { "absent" },
@@ -3744,6 +3745,8 @@ fn check_auth_health() -> DiagnosticCheck {
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
+            ("prompt_ready".to_string(), json!(prompt_ready)),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
             ("legacy_saved_oauth_present".to_string(), json!(true)),
             (
                 "legacy_saved_oauth_expires_at".to_string(),
@@ -3773,6 +3776,8 @@ fn check_auth_health() -> DiagnosticCheck {
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
+            ("prompt_ready".to_string(), json!(prompt_ready)),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
             ("legacy_saved_oauth_present".to_string(), json!(false)),
             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
             ("legacy_refresh_token_present".to_string(), json!(false)),
@@ -3787,6 +3792,8 @@ fn check_auth_health() -> DiagnosticCheck {
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
+            ("prompt_ready".to_string(), json!(prompt_ready)),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
             ("legacy_saved_oauth_present".to_string(), Value::Null),
             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
             ("legacy_refresh_token_present".to_string(), Value::Null),
