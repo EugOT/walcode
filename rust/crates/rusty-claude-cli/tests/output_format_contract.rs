@@ -5021,8 +5021,10 @@ fn plugins_uninstall_not_found_has_hint_793() {
         !output.status.success(),
         "plugins uninstall not-found must exit non-zero (#793)"
     );
-    // Error envelope goes to stderr (propagated via ? to main error handler)
+    // JSON-mode error envelopes are emitted on stdout.
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.trim().is_empty(), "{stderr}");
     let j: serde_json::Value = stdout
         .lines()
         .find(|l| l.trim_start().starts_with('{'))

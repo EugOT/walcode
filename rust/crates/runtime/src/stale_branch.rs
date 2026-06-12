@@ -207,6 +207,8 @@ mod tests {
     fn disable_git_hooks(cwd: &Path) {
         let hooks_dir = cwd.join(".git").join("empty-hooks");
         fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
+        let excludes_file = cwd.join(".git").join("empty-excludes");
+        fs::write(&excludes_file, "").expect("empty excludes file");
         run(
             cwd,
             &[
@@ -215,6 +217,17 @@ mod tests {
                 hooks_dir.to_str().expect("hooks path should be utf8"),
             ],
         );
+        run(
+            cwd,
+            &[
+                "config",
+                "core.excludesFile",
+                excludes_file
+                    .to_str()
+                    .expect("excludes path should be utf8"),
+            ],
+        );
+        run(cwd, &["config", "commit.gpgsign", "false"]);
     }
 
     fn commit_file(repo: &Path, name: &str, msg: &str) {

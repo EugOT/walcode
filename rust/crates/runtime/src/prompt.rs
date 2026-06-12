@@ -759,7 +759,7 @@ mod tests {
     fn disable_git_hooks(root: &Path) {
         let hooks_dir = root.join(".git").join("empty-hooks");
         fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
-        std::process::Command::new("git")
+        let status = std::process::Command::new("git")
             .args([
                 "config",
                 "core.hooksPath",
@@ -768,13 +768,14 @@ mod tests {
             .current_dir(root)
             .status()
             .expect("git config hooksPath should run");
+        assert!(status.success(), "git config hooksPath should succeed");
     }
 
     fn isolate_git_config(root: &Path) {
         disable_git_hooks(root);
         let excludes_file = root.join(".git").join("empty-excludes");
         fs::write(&excludes_file, "").expect("empty excludes file");
-        std::process::Command::new("git")
+        let status = std::process::Command::new("git")
             .args([
                 "config",
                 "core.excludesFile",
@@ -785,6 +786,13 @@ mod tests {
             .current_dir(root)
             .status()
             .expect("git config excludesFile should run");
+        assert!(status.success(), "git config excludesFile should succeed");
+        let status = std::process::Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(root)
+            .status()
+            .expect("git config commit.gpgsign should run");
+        assert!(status.success(), "git config commit.gpgsign should succeed");
     }
 
     #[test]

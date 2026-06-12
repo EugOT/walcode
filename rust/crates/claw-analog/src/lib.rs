@@ -2697,6 +2697,19 @@ glob_max_paths = 100
                 hooks_dir.to_str().expect("hooks path should be utf8"),
             ],
         );
+        let excludes_file = root.join(".git").join("empty-excludes");
+        std::fs::write(&excludes_file, "").expect("empty excludes file");
+        git(
+            root,
+            &[
+                "config",
+                "core.excludesFile",
+                excludes_file
+                    .to_str()
+                    .expect("excludes path should be utf8"),
+            ],
+        );
+        git(root, &["config", "commit.gpgsign", "false"]);
 
         std::fs::write(root.join("a.txt"), "a\n").expect("write a");
         git(root, &["add", "a.txt"]);
