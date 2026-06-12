@@ -1939,9 +1939,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         // Only reject for known top-level subcommands that don't use compact.
         let first = rest[0].as_str();
         if is_known_top_level_subcommand(first) && first != "prompt" {
-            return Err(format!(
-                "invalid_flag_value: --compact is only supported with prompt mode.\nUsage: claw --compact \"<prompt>\" or echo \"<prompt>\" | claw --compact"
-            ));
+            return Err("invalid_flag_value: --compact is only supported with prompt mode.\nUsage: claw --compact \"<prompt>\" or echo \"<prompt>\" | claw --compact".to_string());
         }
     }
 
@@ -2123,7 +2121,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             let tail = &rest[1..];
             if tail.is_empty() {
                 Ok(CliAction::Config {
-                    section: Some("settings".to_string()),
+                    section: Some("settings".into()),
                     output_format,
                 })
             } else if tail.len() == 1 && matches!(tail[0].as_str(), "help" | "--help" | "-h") {
@@ -3129,16 +3127,16 @@ fn print_model_validation_warning_status(
     let (short_reason, inline_hint) = split_error_hint(error);
     let hint = inline_hint.or_else(|| fallback_hint_for_error_kind(kind).map(String::from));
     let format_selection = current_output_format_selection();
-    let mut value = status_json_value(
-        None,
+    let mut value = status_json_value(StatusJsonArgs {
+        model: None,
         usage,
         permission_mode,
         context,
-        None,
-        None,
+        provenance: None,
+        permission_provenance: None,
         allowed_tools,
-        Some(&format_selection),
-    );
+        format_selection: Some(&format_selection),
+    });
     let object = value
         .as_object_mut()
         .expect("status_json_value should render an object");
@@ -3213,9 +3211,7 @@ fn parse_system_prompt_args(
                 })?;
                 // #99: validate --date is a plausible date string (no newlines, reasonable length)
                 if value.contains('\n') || value.contains('\r') {
-                    return Err(format!(
-                        "invalid_flag_value: --date value contains invalid characters.\nUsage: --date <YYYY-MM-DD>"
-                    ));
+                    return Err("invalid_flag_value: --date value contains invalid characters.\nUsage: --date <YYYY-MM-DD>".to_string());
                 }
                 if value.len() > 20 {
                     return Err(format!(
@@ -3452,11 +3448,7 @@ impl DiagnosticCheck {
 
     fn json_value(&self) -> Value {
         // Derive a stable snake_case id from the check name for machine-readable keying (#704).
-        let id = self
-            .name
-            .to_ascii_lowercase()
-            .replace(' ', "_")
-            .replace('-', "_");
+        let id = self.name.to_ascii_lowercase().replace([' ', '-'], "_");
         let mut value = Map::from_iter([
             ("id".to_string(), Value::String(id.clone())),
             (
@@ -6224,7 +6216,7 @@ fn parse_git_status_branch(status: Option<&str>) -> Option<String> {
     let first_line = status.lines().next()?;
     let line = first_line.strip_prefix("## ")?;
     if line.starts_with("HEAD") {
-        return Some("detached HEAD".to_string());
+        return Some("detached HEAD".into());
     }
     let branch = line.split(['.', ' ']).next().unwrap_or_default().trim();
     if branch.is_empty() {
@@ -6420,7 +6412,7 @@ fn resolve_git_branch_for(cwd: &Path) -> Option<String> {
     if fallback.is_empty() {
         None
     } else if fallback == "HEAD" {
-        Some("detached HEAD".to_string())
+        Some("detached HEAD".into())
     } else {
         Some(fallback.to_string())
     }
@@ -6578,22 +6570,22 @@ fn run_resume_command(
                     None, // #148: resumed sessions don't have flag provenance
                     None,
                 )),
-                json: Some(status_json_value(
-                    session.model.as_deref(),
-                    StatusUsage {
+                json: Some(status_json_value(StatusJsonArgs {
+                    model: session.model.as_deref(),
+                    usage: StatusUsage {
                         message_count: session.messages.len(),
                         turns: tracker.turns(),
                         latest: tracker.current_turn_usage(),
                         cumulative: usage,
                         estimated_tokens: 0,
                     },
-                    default_permission_mode().as_str(),
-                    &context,
-                    None, // #148: resumed sessions don't have flag provenance
-                    None,
-                    None,
-                    None,
-                )),
+                    permission_mode: default_permission_mode().as_str(),
+                    context: &context,
+                    provenance: None, // #148: resumed sessions don't have flag provenance
+                    permission_provenance: None,
+                    allowed_tools: None,
+                    format_selection: None,
+                })),
             })
         }
         SlashCommand::Sandbox => {
@@ -6730,16 +6722,15 @@ fn run_resume_command(
         }
         SlashCommand::Plugins { action, target } => {
             // Only list is supported in resume mode (no runtime to reload)
-            match action.as_deref() {
-                Some(action @ ("install" | "uninstall" | "enable" | "disable" | "update")) => {
-                    // #777: use interactive_only: prefix + \n hint so #776's classify/split
-                    // emits error_kind:interactive_only + non-null hint instead of unknown+null.
-                    // Orchestrators can now detect this and switch to a live REPL instead of retrying.
-                    return Err(format!(
-                        "interactive_only: /plugins {action} requires a live session to reload the plugin runtime.\nStart `claw` and run `/plugins {action}` inside the REPL, or use `claw plugins {action}` as a direct CLI command."
-                    ).into());
-                }
-                _ => {}
+            if let Some(action @ ("install" | "uninstall" | "enable" | "disable" | "update")) =
+                action.as_deref()
+            {
+                // #777: use interactive_only: prefix + \n hint so #776's classify/split
+                // emits error_kind:interactive_only + non-null hint instead of unknown+null.
+                // Orchestrators can now detect this and switch to a live REPL instead of retrying.
+                return Err(format!(
+                    "interactive_only: /plugins {action} requires a live session to reload the plugin runtime.\nStart `claw` and run `/plugins {action}` inside the REPL, or use `claw plugins {action}` as a direct CLI command."
+                ).into());
             }
             let cwd = env::current_dir()?;
             let payload = plugins_command_payload_for(
@@ -7533,7 +7524,7 @@ fn mcp_wrapper_tool_definitions() -> Vec<RuntimeToolDefinition> {
         },
         RuntimeToolDefinition {
             name: "ReadMcpResourceTool".to_string(),
-            description: Some("Read a specific MCP resource from a configured server.".to_string()),
+            description: Some("Read a specific MCP resource from a configured server.".into()),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -7852,8 +7843,12 @@ impl LiveCli {
                     let max_compact_rounds = 4;
                     let preserve_schedule = [4, 2, 1, 0];
 
-                    for round in 0..max_compact_rounds {
-                        let preserve = preserve_schedule[round];
+                    for (round, preserve) in preserve_schedule
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .take(max_compact_rounds)
+                    {
                         println!(
                             "  Auto-compacting session (round {}/{}, preserving {} recent messages)...",
                             round + 1,
@@ -8611,8 +8606,8 @@ impl LiveCli {
         let cwd = env::current_dir()?;
         // #803: reject flag-shaped tokens in list filter for BOTH text and JSON modes.
         // Previously the guard was JSON-only (#793); text mode silently returned empty success.
-        if action.as_deref() == Some("list") {
-            if let Some(filter) = target.as_deref() {
+        if action == Some("list") {
+            if let Some(filter) = target {
                 if filter.starts_with('-') {
                     if matches!(output_format, CliOutputFormat::Json) {
                         // ROADMAP #817: this is a handled local inventory parse error.
@@ -9562,36 +9557,48 @@ fn print_status_snapshot(
         ),
         CliOutputFormat::Json => println!(
             "{}",
-            serde_json::to_string_pretty(&status_json_value(
-                Some(&provenance.resolved),
+            serde_json::to_string_pretty(&status_json_value(StatusJsonArgs {
+                model: Some(&provenance.resolved),
                 usage,
-                permission_mode.mode.as_str(),
-                &context,
-                Some(&provenance),
-                Some(&permission_mode),
+                permission_mode: permission_mode.mode.as_str(),
+                context: &context,
+                provenance: Some(&provenance),
+                permission_provenance: Some(&permission_mode),
                 allowed_tools,
-                Some(&format_selection),
-            ))?
+                format_selection: Some(&format_selection),
+            }))?
         ),
     }
     Ok(())
 }
 
-fn status_json_value(
-    model: Option<&str>,
+struct StatusJsonArgs<'a> {
+    model: Option<&'a str>,
     usage: StatusUsage,
-    permission_mode: &str,
-    context: &StatusContext,
+    permission_mode: &'a str,
+    context: &'a StatusContext,
     // #148: optional provenance for `model` field. Surfaces `model_source`
     // ("flag" | "env" | "config" | "default") and `model_raw` (user input
     // before alias resolution, or null when source is "default"). Callers
     // that don't have provenance (legacy resume paths) pass None, in which
     // case both new fields are omitted.
-    provenance: Option<&ModelProvenance>,
-    permission_provenance: Option<&PermissionModeProvenance>,
-    allowed_tools: Option<&AllowedToolSet>,
-    format_selection: Option<&OutputFormatSelection>,
-) -> serde_json::Value {
+    provenance: Option<&'a ModelProvenance>,
+    permission_provenance: Option<&'a PermissionModeProvenance>,
+    allowed_tools: Option<&'a AllowedToolSet>,
+    format_selection: Option<&'a OutputFormatSelection>,
+}
+
+fn status_json_value(args: StatusJsonArgs<'_>) -> serde_json::Value {
+    let StatusJsonArgs {
+        model,
+        usage,
+        permission_mode,
+        context,
+        provenance,
+        permission_provenance,
+        allowed_tools,
+        format_selection,
+    } = args;
     // #143: top-level `status` marker so claws can distinguish
     // a clean run from a degraded run (config parse failed but other fields
     // are still populated). `config_load_error` carries the parse-error string
@@ -10073,9 +10080,7 @@ fn sandbox_json_value(status: &runtime::SandboxStatus) -> serde_json::Value {
     //        (#731: "not supported on macOS" is a degraded state, not a hard error;
     //         filesystem_active:true means partial containment is working)
     // error = enabled but unsupported AND no filesystem sandbox either (nothing active)
-    let top_status = if !status.enabled {
-        "ok"
-    } else if status.active {
+    let top_status = if !status.enabled || status.active {
         "ok"
     } else if status.supported {
         "warn"
@@ -10450,18 +10455,18 @@ fn render_doctor_help_json() -> serde_json::Value {
 }
 
 /// #683-#692: extract structured metadata from help prose
-fn extract_help_metadata(
-    topic: LocalHelpTopic,
-) -> (
-    Option<String>,      // usage
-    Option<String>,      // purpose
-    Option<String>,      // output description
-    Option<Vec<String>>, // formats
-    Option<Vec<String>>, // related
-    Option<Vec<String>>, // aliases
-    bool,                // local_only
-    bool,                // requires_credentials
-) {
+struct HelpMetadata {
+    usage: Option<String>,
+    purpose: Option<String>,
+    output_desc: Option<String>,
+    formats: Option<Vec<String>>,
+    related: Option<Vec<String>>,
+    aliases: Option<Vec<String>>,
+    local_only: bool,
+    requires_credentials: bool,
+}
+
+fn extract_help_metadata(topic: LocalHelpTopic) -> HelpMetadata {
     let text = render_help_topic(topic);
     let mut usage = None;
     let mut purpose = None;
@@ -10513,7 +10518,7 @@ fn extract_help_metadata(
             }
         }
     }
-    (
+    HelpMetadata {
         usage,
         purpose,
         output_desc,
@@ -10521,8 +10526,8 @@ fn extract_help_metadata(
         related,
         aliases,
         local_only,
-        !local_only,
-    )
+        requires_credentials: !local_only,
+    }
 }
 
 fn render_help_topic_json(topic: LocalHelpTopic) -> serde_json::Value {
@@ -10534,8 +10539,16 @@ fn render_help_topic_json(topic: LocalHelpTopic) -> serde_json::Value {
     }
 
     // #683-#692: extract structured metadata from help prose for machine consumption
-    let (usage, purpose, output_desc, formats, related, aliases, local_only, requires_credentials) =
-        extract_help_metadata(topic);
+    let HelpMetadata {
+        usage,
+        purpose,
+        output_desc,
+        formats,
+        related,
+        aliases,
+        local_only,
+        requires_credentials,
+    } = extract_help_metadata(topic);
     let mut obj = serde_json::json!({
         "kind": "help",
         "action": "help",
@@ -12989,7 +13002,7 @@ fn format_context_window_blocked_error(session_id: &str, error: &api::ApiError) 
             lines.push(format!("  Context window   {context_window_tokens} tokens"));
         }
         api::ApiError::Api { message, body, .. } => {
-            let detail = message.as_deref().unwrap_or(body).trim();
+            let detail = message.as_deref().unwrap_or(body.as_ref()).trim();
             if !detail.is_empty() {
                 lines.push(format!(
                     "  Detail           {}",
@@ -12999,7 +13012,9 @@ fn format_context_window_blocked_error(session_id: &str, error: &api::ApiError) 
         }
         api::ApiError::RetriesExhausted { last_error, .. } => {
             let detail = match last_error.as_ref() {
-                api::ApiError::Api { message, body, .. } => message.as_deref().unwrap_or(body),
+                api::ApiError::Api { message, body, .. } => {
+                    message.as_deref().unwrap_or(body.as_ref())
+                }
                 other => return format_context_window_blocked_error(session_id, other),
             }
             .trim();
@@ -14008,39 +14023,37 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
             let content = message
                 .blocks
                 .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => {
-                        Some(InputContentBlock::Text { text: text.clone() })
-                    }
+                .map(|block| match block {
+                    ContentBlock::Text { text } => InputContentBlock::Text { text: text.clone() },
                     ContentBlock::Thinking {
                         thinking,
                         signature,
                     } => {
                         // 保留 Thinking 块：OpenAI 兼容协议会把它转成 reasoning_content 字段
                         // 回传给 DeepSeek V4（避免 400 "reasoning_content must be passed back" 错误）
-                        Some(InputContentBlock::Thinking {
+                        InputContentBlock::Thinking {
                             thinking: thinking.clone(),
                             signature: signature.clone(),
-                        })
+                        }
                     }
-                    ContentBlock::ToolUse { id, name, input } => Some(InputContentBlock::ToolUse {
+                    ContentBlock::ToolUse { id, name, input } => InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
                         input: serde_json::from_str(input)
                             .unwrap_or_else(|_| serde_json::json!({ "raw": input })),
-                    }),
+                    },
                     ContentBlock::ToolResult {
                         tool_use_id,
                         output,
                         is_error,
                         ..
-                    } => Some(InputContentBlock::ToolResult {
+                    } => InputContentBlock::ToolResult {
                         tool_use_id: tool_use_id.clone(),
                         content: vec![ToolResultContentBlock::Text {
                             text: output.clone(),
                         }],
                         is_error: *is_error,
-                    }),
+                    },
                 })
                 .collect::<Vec<_>>();
             (!content.is_empty()).then(|| InputMessage {
@@ -14318,7 +14331,7 @@ mod tests {
             "plugin-demo",
             PluginToolDefinition {
                 name: "plugin_echo".to_string(),
-                description: Some("Echo plugin payload".to_string()),
+                description: Some("Echo plugin payload".into()),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -14340,17 +14353,17 @@ mod tests {
     fn opaque_provider_wrapper_surfaces_failure_class_session_and_trace() {
         let error = ApiError::Api {
             status: "500".parse().expect("status"),
-            error_type: Some("api_error".to_string()),
+            error_type: Some("api_error".into()),
             message: Some(
                 "Something went wrong while processing your request. Please try again, or use /new to start a fresh session."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_jobdori_789".to_string()),
-            body: String::new(),
+            request_id: Some("req_jobdori_789".into()),
+            body: String::new().into(),
             retryable: true,
             suggested_action: None,
             retry_after: None,
-};
+        };
 
         let rendered = format_user_visible_api_error("session-issue-22", &error);
         assert!(rendered.contains("provider_internal"));
@@ -14364,17 +14377,17 @@ mod tests {
             attempts: 3,
             last_error: Box::new(ApiError::Api {
                 status: "502".parse().expect("status"),
-                error_type: Some("api_error".to_string()),
+                error_type: Some("api_error".into()),
                 message: Some(
                     "Something went wrong while processing your request. Please try again, or use /new to start a fresh session."
-                        .to_string(),
+                        .into(),
                 ),
-                request_id: Some("req_jobdori_790".to_string()),
-                body: String::new(),
+                request_id: Some("req_jobdori_790".into()),
+                body: String::new().into(),
                 retryable: true,
                 suggested_action: None,
                 retry_after: None,
-}),
+            }),
         };
 
         let rendered = format_user_visible_api_error("session-issue-22", &error);
@@ -14429,17 +14442,17 @@ mod tests {
     fn provider_context_window_errors_are_reframed_with_same_guidance() {
         let error = ApiError::Api {
             status: "400".parse().expect("status"),
-            error_type: Some("invalid_request_error".to_string()),
+            error_type: Some("invalid_request_error".into()),
             message: Some(
                 "This model's maximum context length is 200000 tokens, but your request used 230000 tokens."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_ctx_456".to_string()),
-            body: String::new(),
+            request_id: Some("req_ctx_456".into()),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
-};
+        };
 
         let rendered = format_user_visible_api_error("session-issue-32", &error);
         assert!(rendered.contains("context_window_blocked"), "{rendered}");
@@ -14463,13 +14476,13 @@ mod tests {
     fn openai_configured_limit_errors_are_rendered_as_context_window_guidance() {
         let error = ApiError::Api {
             status: "400".parse().expect("status"),
-            error_type: Some("invalid_request_error".to_string()),
+            error_type: Some("invalid_request_error".into()),
             message: Some(
                 "Input tokens exceed the configured limit of 922000 tokens. Your messages resulted in 1860900 tokens. Please reduce the length of the messages."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_ctx_openai_456".to_string()),
-            body: String::new(),
+            request_id: Some("req_ctx_openai_456".into()),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
@@ -14501,10 +14514,10 @@ mod tests {
             attempts: 2,
             last_error: Box::new(ApiError::Api {
                 status: "413".parse().expect("status"),
-                error_type: Some("invalid_request_error".to_string()),
-                message: Some("Request is too large for this model's context window.".to_string()),
-                request_id: Some("req_ctx_retry_789".to_string()),
-                body: String::new(),
+                error_type: Some("invalid_request_error".into()),
+                message: Some("Request is too large for this model's context window.".into()),
+                request_id: Some("req_ctx_retry_789".into()),
+                body: String::new().into(),
                 retryable: false,
                 suggested_action: None,
                 retry_after: None,
@@ -14553,6 +14566,30 @@ mod tests {
             "git command failed: git {}",
             args.join(" ")
         );
+        if args.first() == Some(&"init") {
+            let hooks_dir = cwd.join(".git").join("empty-hooks");
+            fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
+            let excludes_file = cwd.join(".git").join("empty-excludes");
+            fs::write(&excludes_file, "").expect("empty excludes file");
+            for (key, value) in [
+                ("core.hooksPath", hooks_dir.as_path()),
+                ("core.excludesFile", excludes_file.as_path()),
+            ] {
+                let status = Command::new("git")
+                    .args(["config", key])
+                    .arg(value)
+                    .current_dir(cwd)
+                    .status()
+                    .expect("git config should run");
+                assert!(status.success(), "git config {key} failed");
+            }
+            let status = Command::new("git")
+                .args(["config", "commit.gpgsign", "false"])
+                .current_dir(cwd)
+                .status()
+                .expect("git config commit.gpgsign should run");
+            assert!(status.success(), "git config commit.gpgsign failed");
+        }
     }
 
     fn env_lock() -> MutexGuard<'static, ()> {
@@ -14728,7 +14765,7 @@ mod tests {
 
         save_oauth_credentials(&runtime::OAuthTokenSet {
             access_token: "expired-access-token".to_string(),
-            refresh_token: Some("refresh-token".to_string()),
+            refresh_token: Some("refresh-token".into()),
             expires_at: Some(0),
             scopes: vec!["org:create_api_key".to_string(), "user:profile".to_string()],
         })
@@ -15364,7 +15401,7 @@ mod tests {
             parse_args(&["agents".to_string(), "--help".to_string()])
                 .expect("agents help should parse"),
             CliAction::Agents {
-                args: Some("--help".to_string()),
+                args: Some("--help".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -15383,7 +15420,7 @@ mod tests {
             parse_args(&["plugins".to_string(), "list".to_string()])
                 .expect("plugins list should parse"),
             CliAction::Plugins {
-                action: Some("list".to_string()),
+                action: Some("list".into()),
                 target: None,
                 output_format: CliOutputFormat::Text,
             }
@@ -15396,8 +15433,8 @@ mod tests {
             ])
             .expect("plugins enable <target> should parse"),
             CliAction::Plugins {
-                action: Some("enable".to_string()),
-                target: Some("example-bundled".to_string()),
+                action: Some("enable".into()),
+                target: Some("example-bundled".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -15428,7 +15465,7 @@ mod tests {
                 parse_args(&[alias.to_string(), "list".to_string()])
                     .expect("plugin alias list should parse"),
                 CliAction::Plugins {
-                    action: Some("list".to_string()),
+                    action: Some("list".into()),
                     target: None,
                     output_format: CliOutputFormat::Text,
                 },
@@ -15442,8 +15479,8 @@ mod tests {
                 ])
                 .expect("plugin alias install should parse"),
                 CliAction::Plugins {
-                    action: Some("install".to_string()),
-                    target: Some("./fixtures/plugin-demo".to_string()),
+                    action: Some("install".into()),
+                    target: Some("./fixtures/plugin-demo".into()),
                     output_format: CliOutputFormat::Text,
                 },
                 "{alias} install should route to local plugin handling, not Prompt"
@@ -15463,7 +15500,7 @@ mod tests {
             parse_args(&["config".to_string(), "env".to_string()])
                 .expect("config env should parse"),
             CliAction::Config {
-                section: Some("env".to_string()),
+                section: Some("env".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -15908,16 +15945,16 @@ mod tests {
             cumulative: runtime::TokenUsage::default(),
             estimated_tokens: 0,
         };
-        let json = super::status_json_value(
-            Some("test-model"),
+        let json = super::status_json_value(super::StatusJsonArgs {
+            model: Some("test-model"),
             usage,
-            "workspace-write",
-            &context,
-            None,
-            None,
-            None,
-            None,
-        );
+            permission_mode: "workspace-write",
+            context: &context,
+            provenance: None,
+            permission_provenance: None,
+            allowed_tools: None,
+            format_selection: None,
+        });
         assert_eq!(
             json.get("status").and_then(|v| v.as_str()),
             Some("degraded"),
@@ -15983,16 +16020,16 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
-        let restricted_json = super::status_json_value(
-            Some("test-model"),
+        let restricted_json = super::status_json_value(super::StatusJsonArgs {
+            model: Some("test-model"),
             usage,
-            "workspace-write",
-            &context,
-            None,
-            None,
-            Some(&allowed),
-            None,
-        );
+            permission_mode: "workspace-write",
+            context: &context,
+            provenance: None,
+            permission_provenance: None,
+            allowed_tools: Some(&allowed),
+            format_selection: None,
+        });
         assert_eq!(
             restricted_json
                 .pointer("/allowed_tools/source")
@@ -16016,16 +16053,16 @@ mod tests {
             super::status_context(None).expect("clean status_context should succeed")
         });
         assert!(clean_context.config_load_error.is_none());
-        let clean_json = super::status_json_value(
-            Some("test-model"),
+        let clean_json = super::status_json_value(super::StatusJsonArgs {
+            model: Some("test-model"),
             usage,
-            "workspace-write",
-            &clean_context,
-            None,
-            None,
-            None,
-            None,
-        );
+            permission_mode: "workspace-write",
+            context: &clean_context,
+            provenance: None,
+            permission_provenance: None,
+            allowed_tools: None,
+            format_selection: None,
+        });
         assert_eq!(
             clean_json.get("status").and_then(|v| v.as_str()),
             Some("ok"),
@@ -16458,7 +16495,7 @@ mod tests {
         // #77: short reason / hint separation for JSON error payloads
         let (short, hint) = split_error_hint("missing credentials\nHint: export ANTHROPIC_API_KEY");
         assert_eq!(short, "missing credentials");
-        assert_eq!(hint, Some("Hint: export ANTHROPIC_API_KEY".to_string()));
+        assert_eq!(hint, Some("Hint: export ANTHROPIC_API_KEY".into()));
 
         let (short, hint) = split_error_hint("simple error with no hint");
         assert_eq!(short, "simple error with no hint");
@@ -16754,7 +16791,7 @@ mod tests {
             ])
             .expect("json /skills help should parse"),
             CliAction::Skills {
-                args: Some("help".to_string()),
+                args: Some("help".into()),
                 output_format: CliOutputFormat::Json,
             }
         );
@@ -16813,7 +16850,7 @@ mod tests {
             parse_args(&["/mcp".to_string(), "show".to_string(), "demo".to_string()])
                 .expect("/mcp show demo should parse"),
             CliAction::Mcp {
-                args: Some("show demo".to_string()),
+                args: Some("show demo".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -16835,7 +16872,7 @@ mod tests {
             parse_args(&["/skills".to_string(), "help".to_string()])
                 .expect("/skills help should parse"),
             CliAction::Skills {
-                args: Some("help".to_string()),
+                args: Some("help".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -16843,7 +16880,7 @@ mod tests {
             parse_args(&["/skill".to_string(), "list".to_string()])
                 .expect("/skill list should parse"),
             CliAction::Skills {
-                args: Some("list".to_string()),
+                args: Some("list".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -16874,7 +16911,7 @@ mod tests {
             ])
             .expect("/skills install should parse"),
             CliAction::Skills {
-                args: Some("install ./fixtures/help-skill".to_string()),
+                args: Some("install ./fixtures/help-skill".into()),
                 output_format: CliOutputFormat::Text,
             }
         );
@@ -16972,7 +17009,7 @@ mod tests {
         for action in ["remove", "uninstall", "delete"] {
             assert_eq!(
                 parse_args(&["skills".to_string(), action.to_string()])
-                    .expect(&format!("skills {action} should parse")),
+                    .unwrap_or_else(|_| panic!("skills {action} should parse")),
                 CliAction::Skills {
                     args: Some(action.to_string()),
                     output_format: CliOutputFormat::Text,
@@ -17455,8 +17492,8 @@ mod tests {
             &path,
             &session,
             &SlashCommand::Session {
-                action: Some("exists".to_string()),
-                target: Some("definitely-missing-session".to_string()),
+                action: Some("exists".into()),
+                target: Some("definitely-missing-session".into()),
             },
         )
         .expect("exists command should not fail for missing sessions");
@@ -17556,7 +17593,7 @@ mod tests {
 
     fn test_branch_freshness() -> super::BranchFreshness {
         super::BranchFreshness {
-            upstream: Some("origin/main".to_string()),
+            upstream: Some("origin/main".into()),
             ahead: 0,
             behind: 0,
             fresh: Some(true),
@@ -17629,7 +17666,7 @@ mod tests {
                 }],
                 unloaded_memory_files: Vec::new(),
                 project_root: Some(PathBuf::from("/tmp")),
-                git_branch: Some("main".to_string()),
+                git_branch: Some("main".into()),
                 git_summary: GitWorkspaceSummary {
                     changed_files: 3,
                     staged_files: 1,
@@ -17642,8 +17679,8 @@ mod tests {
                 stale_base_state: super::BaseCommitState::NoExpectedBase,
                 session_lifecycle: SessionLifecycleSummary {
                     kind: SessionLifecycleKind::IdleShell,
-                    pane_id: Some("%7".to_string()),
-                    pane_command: Some("zsh".to_string()),
+                    pane_id: Some("%7".into()),
+                    pane_command: Some("zsh".into()),
                     pane_path: Some(PathBuf::from("/tmp/project")),
                     workspace_dirty: true,
                     abandoned: true,
@@ -17788,7 +17825,7 @@ mod tests {
             memory_files: Vec::new(),
             unloaded_memory_files: Vec::new(),
             project_root: Some(PathBuf::from("/tmp/project")),
-            git_branch: Some("feature/stale-base".to_string()),
+            git_branch: Some("feature/stale-base".into()),
             git_summary: GitWorkspaceSummary::default(),
             branch_freshness: test_branch_freshness(),
             stale_base_state: super::BaseCommitState::Diverged {
@@ -17845,7 +17882,7 @@ mod tests {
             }],
             unloaded_memory_files: vec!["/tmp/project/AGENTS.md".to_string()],
             project_root: Some(PathBuf::from("/tmp/project")),
-            git_branch: Some("main".to_string()),
+            git_branch: Some("main".into()),
             git_summary: GitWorkspaceSummary::default(),
             branch_freshness: test_branch_freshness(),
             stale_base_state: super::BaseCommitState::NoExpectedBase,
@@ -17891,14 +17928,14 @@ mod tests {
             memory_files: Vec::new(),
             unloaded_memory_files: Vec::new(),
             project_root: Some(PathBuf::from("/tmp/project")),
-            git_branch: Some("feature/session-lifecycle".to_string()),
+            git_branch: Some("feature/session-lifecycle".into()),
             git_summary: GitWorkspaceSummary::default(),
             branch_freshness: test_branch_freshness(),
             stale_base_state: super::BaseCommitState::NoExpectedBase,
             session_lifecycle: SessionLifecycleSummary {
                 kind: SessionLifecycleKind::RunningProcess,
-                pane_id: Some("%9".to_string()),
-                pane_command: Some("claw".to_string()),
+                pane_id: Some("%9".into()),
+                pane_command: Some("claw".into()),
                 pane_path: Some(PathBuf::from("/tmp/project")),
                 workspace_dirty: false,
                 abandoned: false,
@@ -17915,22 +17952,22 @@ mod tests {
             duplicate_flags: Vec::new(),
         };
 
-        let value = status_json_value(
-            Some("claude-sonnet"),
-            StatusUsage {
+        let value = status_json_value(super::StatusJsonArgs {
+            model: Some("claude-sonnet"),
+            usage: StatusUsage {
                 message_count: 0,
                 turns: 0,
                 latest: runtime::TokenUsage::default(),
                 cumulative: runtime::TokenUsage::default(),
                 estimated_tokens: 0,
             },
-            "workspace-write",
-            &context,
-            None,
-            None,
-            None,
-            None,
-        );
+            permission_mode: "workspace-write",
+            context: &context,
+            provenance: None,
+            permission_provenance: None,
+            allowed_tools: None,
+            format_selection: None,
+        });
 
         assert_eq!(
             value["workspace"]["session_lifecycle"]["kind"],
@@ -18114,7 +18151,7 @@ mod tests {
                 "## HEAD (no branch)
  M src/main.rs"
             )),
-            Some("detached HEAD".to_string())
+            Some("detached HEAD".into())
         );
     }
 
@@ -18281,7 +18318,7 @@ UU conflicted.rs",
         assert_eq!(
             SlashCommand::parse("/resume saved-session.jsonl"),
             Ok(Some(SlashCommand::Resume {
-                session_path: Some("saved-session.jsonl".to_string())
+                session_path: Some("saved-session.jsonl".into())
             }))
         );
         assert_eq!(
@@ -18295,7 +18332,7 @@ UU conflicted.rs",
         assert_eq!(
             SlashCommand::parse("/config env"),
             Ok(Some(SlashCommand::Config {
-                section: Some("env".to_string())
+                section: Some("env".into())
             }))
         );
         assert_eq!(
@@ -18306,8 +18343,8 @@ UU conflicted.rs",
         assert_eq!(
             SlashCommand::parse("/session fork incident-review"),
             Ok(Some(SlashCommand::Session {
-                action: Some("fork".to_string()),
-                target: Some("incident-review".to_string())
+                action: Some("fork".into()),
+                target: Some("incident-review".into())
             }))
         );
     }
@@ -18913,7 +18950,7 @@ UU conflicted.rs",
             task_label: "ship plugin progress".to_string(),
             step: 3,
             phase: "running read_file".to_string(),
-            detail: Some("reading rust/crates/rusty-claude-cli/src/main.rs".to_string()),
+            detail: Some("reading rust/crates/rusty-claude-cli/src/main.rs".into()),
             saw_final_text: false,
         };
 
@@ -19035,7 +19072,7 @@ UU conflicted.rs",
                     name: "read_file".to_string(),
                     input: json!({}),
                 }],
-                stop_reason: Some("tool_use".to_string()),
+                stop_reason: Some("tool_use".into()),
                 stop_sequence: None,
                 usage: Usage {
                     input_tokens: 1,
@@ -19070,7 +19107,7 @@ UU conflicted.rs",
                     name: "read_file".to_string(),
                     input: json!({ "path": "rust/Cargo.toml" }),
                 }],
-                stop_reason: Some("tool_use".to_string()),
+                stop_reason: Some("tool_use".into()),
                 stop_sequence: None,
                 usage: Usage {
                     input_tokens: 1,
@@ -19103,13 +19140,13 @@ UU conflicted.rs",
                 content: vec![
                     OutputContentBlock::Thinking {
                         thinking: "step 1".to_string(),
-                        signature: Some("sig_123".to_string()),
+                        signature: Some("sig_123".into()),
                     },
                     OutputContentBlock::Text {
                         text: "Final answer".to_string(),
                     },
                 ],
-                stop_reason: Some("end_turn".to_string()),
+                stop_reason: Some("end_turn".into()),
                 stop_sequence: None,
                 usage: Usage {
                     input_tokens: 1,

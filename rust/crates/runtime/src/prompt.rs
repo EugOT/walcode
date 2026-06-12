@@ -756,6 +756,45 @@ mod tests {
         }
     }
 
+    fn disable_git_hooks(root: &Path) {
+        let hooks_dir = root.join(".git").join("empty-hooks");
+        fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
+        let status = std::process::Command::new("git")
+            .args([
+                "config",
+                "core.hooksPath",
+                hooks_dir.to_str().expect("hooks path should be utf8"),
+            ])
+            .current_dir(root)
+            .status()
+            .expect("git config hooksPath should run");
+        assert!(status.success(), "git config hooksPath should succeed");
+    }
+
+    fn isolate_git_config(root: &Path) {
+        disable_git_hooks(root);
+        let excludes_file = root.join(".git").join("empty-excludes");
+        fs::write(&excludes_file, "").expect("empty excludes file");
+        let status = std::process::Command::new("git")
+            .args([
+                "config",
+                "core.excludesFile",
+                excludes_file
+                    .to_str()
+                    .expect("excludes path should be utf8"),
+            ])
+            .current_dir(root)
+            .status()
+            .expect("git config excludesFile should run");
+        assert!(status.success(), "git config excludesFile should succeed");
+        let status = std::process::Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(root)
+            .status()
+            .expect("git config commit.gpgsign should run");
+        assert!(status.success(), "git config commit.gpgsign should succeed");
+    }
+
     #[test]
     fn discovers_claw_rules_files_in_sorted_order() {
         let root = temp_dir();
@@ -1038,6 +1077,7 @@ mod tests {
             .current_dir(&root)
             .status()
             .expect("git init should run");
+        isolate_git_config(&root);
         fs::write(root.join("CLAUDE.md"), "rules").expect("write instructions");
         fs::write(root.join("tracked.txt"), "hello").expect("write tracked file");
 
@@ -1065,6 +1105,7 @@ mod tests {
             .current_dir(&root)
             .status()
             .expect("git init should run");
+        isolate_git_config(&root);
         std::process::Command::new("git")
             .args(["config", "user.email", "tests@example.com"])
             .current_dir(&root)
@@ -1146,6 +1187,7 @@ mod tests {
             .current_dir(&root)
             .status()
             .expect("git init should run");
+        isolate_git_config(&root);
         std::process::Command::new("git")
             .args(["config", "user.email", "tests@example.com"])
             .current_dir(&root)

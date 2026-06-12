@@ -54,13 +54,13 @@ pub enum ApiError {
     },
     Api {
         status: reqwest::StatusCode,
-        error_type: Option<String>,
-        message: Option<String>,
-        request_id: Option<String>,
-        body: String,
+        error_type: Option<Box<str>>,
+        message: Option<Box<str>>,
+        request_id: Option<Box<str>>,
+        body: Box<str>,
         retryable: bool,
         /// Suggested user action based on error type (e.g., "Reduce prompt size" for 413)
-        suggested_action: Option<String>,
+        suggested_action: Option<Box<str>>,
         /// Parsed Retry-After header value (seconds) for 429 responses.
         /// When present, overrides the exponential backoff delay.
         retry_after: Option<Duration>,
@@ -535,16 +535,16 @@ mod tests {
     fn detects_generic_fatal_wrapper_and_classifies_it_as_provider_internal() {
         let error = ApiError::Api {
             status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            error_type: Some("api_error".to_string()),
+            error_type: Some("api_error".into()),
             message: Some(
                 "Something went wrong while processing your request. Please try again, or use /new to start a fresh session."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_jobdori_123".to_string()),
-            body: String::new(),
+            request_id: Some("req_jobdori_123".into()),
+            body: String::new().into(),
             retryable: true,
             suggested_action: None,
-        retry_after: None,
+            retry_after: None,
         };
 
         assert!(error.is_generic_fatal_wrapper());
@@ -559,16 +559,16 @@ mod tests {
             attempts: 3,
             last_error: Box::new(ApiError::Api {
                 status: reqwest::StatusCode::BAD_GATEWAY,
-                error_type: Some("api_error".to_string()),
+                error_type: Some("api_error".into()),
                 message: Some(
                     "Something went wrong while processing your request. Please try again, or use /new to start a fresh session."
-                        .to_string(),
+                        .into(),
                 ),
-                request_id: Some("req_nested_456".to_string()),
-                body: String::new(),
+                request_id: Some("req_nested_456".into()),
+                body: String::new().into(),
                 retryable: true,
                 suggested_action: None,
-            retry_after: None,
+                retry_after: None,
             }),
         };
 
@@ -581,16 +581,16 @@ mod tests {
     fn classifies_provider_context_window_errors() {
         let error = ApiError::Api {
             status: reqwest::StatusCode::BAD_REQUEST,
-            error_type: Some("invalid_request_error".to_string()),
+            error_type: Some("invalid_request_error".into()),
             message: Some(
                 "This model's maximum context length is 200000 tokens, but your request used 230000 tokens."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_ctx_123".to_string()),
-            body: String::new(),
+            request_id: Some("req_ctx_123".into()),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
-        retry_after: None,
+            retry_after: None,
         };
 
         assert!(error.is_context_window_failure());
@@ -602,13 +602,13 @@ mod tests {
     fn classifies_openai_configured_limit_errors_as_context_window_failures() {
         let error = ApiError::Api {
             status: reqwest::StatusCode::BAD_REQUEST,
-            error_type: Some("invalid_request_error".to_string()),
+            error_type: Some("invalid_request_error".into()),
             message: Some(
                 "Input tokens exceed the configured limit of 922000 tokens. Your messages resulted in 1860900 tokens. Please reduce the length of the messages."
-                    .to_string(),
+                    .into(),
             ),
-            request_id: Some("req_ctx_openai_123".to_string()),
-            body: String::new(),
+            request_id: Some("req_ctx_openai_123".into()),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
