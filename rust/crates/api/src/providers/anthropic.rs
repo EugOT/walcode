@@ -896,12 +896,12 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
         status,
         error_type: parsed_error
             .as_ref()
-            .map(|error| error.error.error_type.clone()),
+            .map(|error| error.error.error_type.clone().into()),
         message: parsed_error
             .as_ref()
-            .map(|error| error.error.message.clone()),
-        request_id,
-        body,
+            .map(|error| error.error.message.clone().into()),
+        request_id: request_id.map(Into::into),
+        body: body.into(),
         retryable,
         suggested_action: None,
         retry_after,
@@ -1019,8 +1019,8 @@ fn enrich_bearer_auth_error(error: ApiError, auth: &AuthSource) -> ApiError {
         };
     }
     let enriched_message = match message {
-        Some(existing) => Some(format!("{existing} — hint: {SK_ANT_BEARER_HINT}")),
-        None => Some(format!("hint: {SK_ANT_BEARER_HINT}")),
+        Some(existing) => Some(format!("{existing} — hint: {SK_ANT_BEARER_HINT}").into()),
+        None => Some(format!("hint: {SK_ANT_BEARER_HINT}").into()),
     };
     ApiError::Api {
         status,
@@ -1129,7 +1129,7 @@ mod tests {
             authorize_url: "https://console.test/oauth/authorize".to_string(),
             token_url,
             callback_port: Some(4545),
-            manual_redirect_url: Some("https://console.test/oauth/callback".to_string()),
+            manual_redirect_url: Some("https://console.test/oauth/callback".into()),
             scopes: vec!["org:read".to_string(), "user:write".to_string()],
         }
     }
@@ -1204,7 +1204,7 @@ mod tests {
     fn oauth_token_maps_to_bearer_auth_source() {
         let auth = AuthSource::from(OAuthTokenSet {
             access_token: "access-token".to_string(),
-            refresh_token: Some("refresh".to_string()),
+            refresh_token: Some("refresh".into()),
             expires_at: Some(123),
             scopes: vec!["scope:a".to_string()],
         });
@@ -1233,7 +1233,7 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
             access_token: "saved-access-token".to_string(),
-            refresh_token: Some("refresh".to_string()),
+            refresh_token: Some("refresh".into()),
             expires_at: Some(now_unix_timestamp() + 300),
             scopes: vec!["scope:a".to_string()],
         })
@@ -1272,7 +1272,7 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
             access_token: "expired-access-token".to_string(),
-            refresh_token: Some("refresh-token".to_string()),
+            refresh_token: Some("refresh-token".into()),
             expires_at: Some(1),
             scopes: vec!["scope:a".to_string()],
         })
@@ -1304,7 +1304,7 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
             access_token: "saved-access-token".to_string(),
-            refresh_token: Some("refresh".to_string()),
+            refresh_token: Some("refresh".into()),
             expires_at: Some(now_unix_timestamp() + 300),
             scopes: vec!["scope:a".to_string()],
         })
@@ -1328,7 +1328,7 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
         save_oauth_credentials(&runtime::OAuthTokenSet {
             access_token: "expired-access-token".to_string(),
-            refresh_token: Some("refresh-token".to_string()),
+            refresh_token: Some("refresh-token".into()),
             expires_at: Some(1),
             scopes: vec!["scope:a".to_string()],
         })
@@ -1649,10 +1649,10 @@ mod tests {
         let auth = AuthSource::BearerToken("sk-ant-api03-deadbeef".to_string());
         let error = crate::error::ApiError::Api {
             status: reqwest::StatusCode::UNAUTHORIZED,
-            error_type: Some("authentication_error".to_string()),
-            message: Some("Invalid bearer token".to_string()),
-            request_id: Some("req_varleg_001".to_string()),
-            body: String::new(),
+            error_type: Some("authentication_error".into()),
+            message: Some("Invalid bearer token".into()),
+            request_id: Some("req_varleg_001".into()),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
@@ -1691,10 +1691,10 @@ mod tests {
         let auth = AuthSource::BearerToken("sk-ant-api03-deadbeef".to_string());
         let error = crate::error::ApiError::Api {
             status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-            error_type: Some("api_error".to_string()),
-            message: Some("internal server error".to_string()),
+            error_type: Some("api_error".into()),
+            message: Some("internal server error".into()),
             request_id: None,
-            body: String::new(),
+            body: String::new().into(),
             retryable: true,
             suggested_action: None,
             retry_after: None,
@@ -1721,10 +1721,10 @@ mod tests {
         let auth = AuthSource::BearerToken("oauth-access-token-opaque".to_string());
         let error = crate::error::ApiError::Api {
             status: reqwest::StatusCode::UNAUTHORIZED,
-            error_type: Some("authentication_error".to_string()),
-            message: Some("Invalid bearer token".to_string()),
+            error_type: Some("authentication_error".into()),
+            message: Some("Invalid bearer token".into()),
             request_id: None,
-            body: String::new(),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
@@ -1750,10 +1750,10 @@ mod tests {
         };
         let error = crate::error::ApiError::Api {
             status: reqwest::StatusCode::UNAUTHORIZED,
-            error_type: Some("authentication_error".to_string()),
-            message: Some("Invalid bearer token".to_string()),
+            error_type: Some("authentication_error".into()),
+            message: Some("Invalid bearer token".into()),
             request_id: None,
-            body: String::new(),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,
@@ -1776,10 +1776,10 @@ mod tests {
         let auth = AuthSource::ApiKey("sk-ant-api03-legitimate".to_string());
         let error = crate::error::ApiError::Api {
             status: reqwest::StatusCode::UNAUTHORIZED,
-            error_type: Some("authentication_error".to_string()),
-            message: Some("Invalid x-api-key".to_string()),
+            error_type: Some("authentication_error".into()),
+            message: Some("Invalid x-api-key".into()),
             request_id: None,
-            body: String::new(),
+            body: String::new().into(),
             retryable: false,
             suggested_action: None,
             retry_after: None,

@@ -194,6 +194,7 @@ mod tests {
         let root = temp_dir("branch-commits");
         fs::create_dir_all(&root).expect("create dir");
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        disable_git_hooks(&root);
         git(&root, &["config", "user.email", "tests@example.com"]);
         git(&root, &["config", "user.name", "Git Context Tests"]);
         fs::write(root.join("a.txt"), "a\n").expect("write a");
@@ -223,6 +224,7 @@ mod tests {
         let root = temp_dir("staged");
         fs::create_dir_all(&root).expect("create dir");
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        disable_git_hooks(&root);
         git(&root, &["config", "user.email", "tests@example.com"]);
         git(&root, &["config", "user.name", "Git Context Tests"]);
         fs::write(root.join("init.txt"), "init\n").expect("write init");
@@ -293,6 +295,7 @@ mod tests {
         let root = temp_dir("five-commits");
         fs::create_dir_all(&root).expect("create dir");
         git(&root, &["init", "--quiet", "--initial-branch=main"]);
+        disable_git_hooks(&root);
         git(&root, &["config", "user.email", "tests@example.com"]);
         git(&root, &["config", "user.name", "Git Context Tests"]);
         for i in 1..=8 {
@@ -320,5 +323,18 @@ mod tests {
             .unwrap_or_else(|_| panic!("git {args:?} should run"))
             .status;
         assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn disable_git_hooks(cwd: &std::path::Path) {
+        let hooks_dir = cwd.join(".git").join("empty-hooks");
+        fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
+        git(
+            cwd,
+            &[
+                "config",
+                "core.hooksPath",
+                hooks_dir.to_str().expect("hooks path should be utf8"),
+            ],
+        );
     }
 }

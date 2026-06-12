@@ -242,18 +242,16 @@ impl OpenAiCompatClient {
                 return Err(ApiError::Api {
                     status: reqwest::StatusCode::from_u16(code.unwrap_or(400))
                         .unwrap_or(reqwest::StatusCode::BAD_REQUEST),
-                    error_type: err_obj
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .map(str::to_owned),
-                    message: Some(msg),
-                    request_id,
-                    body,
+                    error_type: err_obj.get("type").and_then(|t| t.as_str()).map(Into::into),
+                    message: Some(msg.into()),
+                    request_id: request_id.map(Into::into),
+                    body: body.into(),
                     retryable: false,
                     suggested_action: suggested_action_for_status(
                         reqwest::StatusCode::from_u16(code.unwrap_or(400))
                             .unwrap_or(reqwest::StatusCode::BAD_REQUEST),
-                    ),
+                    )
+                    .map(Into::into),
                     retry_after: None,
                 });
             }
@@ -1610,15 +1608,12 @@ fn parse_sse_frame(
                     .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
                 return Err(ApiError::Api {
                     status,
-                    error_type: err_obj
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .map(str::to_owned),
-                    message: Some(msg),
+                    error_type: err_obj.get("type").and_then(|t| t.as_str()).map(Into::into),
+                    message: Some(msg.into()),
                     request_id: None,
-                    body: trimmed.chars().take(500).collect(),
+                    body: trimmed.chars().take(500).collect::<String>().into(),
                     retryable: false,
-                    suggested_action: suggested_action_for_status(status),
+                    suggested_action: suggested_action_for_status(status).map(Into::into),
                     retry_after: None,
                 });
             }
@@ -1627,14 +1622,12 @@ fn parse_sse_frame(
         if trimmed.starts_with('<') || trimmed.starts_with("<!") {
             return Err(ApiError::Api {
                 status: reqwest::StatusCode::BAD_REQUEST,
-                error_type: Some("invalid_response".to_string()),
-                message: Some(
-                    "provider returned HTML instead of JSON (check endpoint URL)".to_string(),
-                ),
+                error_type: Some("invalid_response".into()),
+                message: Some("provider returned HTML instead of JSON (check endpoint URL)".into()),
                 request_id: None,
-                body: trimmed.chars().take(200).collect(),
+                body: trimmed.chars().take(200).collect::<String>().into(),
                 retryable: false,
-                suggested_action: Some("verify the API endpoint URL is correct".to_string()),
+                suggested_action: Some("verify the API endpoint URL is correct".into()),
                 retry_after: None,
             });
         }
@@ -1662,15 +1655,12 @@ fn parse_sse_frame(
                 .unwrap_or(reqwest::StatusCode::BAD_REQUEST);
             return Err(ApiError::Api {
                 status,
-                error_type: err_obj
-                    .get("type")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned),
-                message: Some(msg),
+                error_type: err_obj.get("type").and_then(|t| t.as_str()).map(Into::into),
+                message: Some(msg.into()),
                 request_id: None,
-                body: payload.clone(),
+                body: payload.clone().into(),
                 retryable: false,
-                suggested_action: suggested_action_for_status(status),
+                suggested_action: suggested_action_for_status(status).map(Into::into),
                 retry_after: None,
             });
         }
@@ -1680,14 +1670,12 @@ fn parse_sse_frame(
     if trimmed_payload.starts_with('<') || trimmed_payload.starts_with("<!") {
         return Err(ApiError::Api {
             status: reqwest::StatusCode::BAD_REQUEST,
-            error_type: Some("invalid_response".to_string()),
-            message: Some(
-                "provider returned HTML instead of JSON (check endpoint URL)".to_string(),
-            ),
+            error_type: Some("invalid_response".into()),
+            message: Some("provider returned HTML instead of JSON (check endpoint URL)".into()),
             request_id: None,
-            body: payload.chars().take(200).collect(),
+            body: payload.chars().take(200).collect::<String>().into(),
             retryable: false,
-            suggested_action: Some("verify the API endpoint URL is correct".to_string()),
+            suggested_action: Some("verify the API endpoint URL is correct".into()),
             retry_after: None,
         });
     }
@@ -1753,14 +1741,16 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
         status,
         error_type: parsed_error
             .as_ref()
-            .and_then(|error| error.error.error_type.clone()),
+            .and_then(|error| error.error.error_type.clone())
+            .map(Into::into),
         message: parsed_error
             .as_ref()
-            .and_then(|error| error.error.message.clone()),
-        request_id,
-        body,
+            .and_then(|error| error.error.message.clone())
+            .map(Into::into),
+        request_id: request_id.map(Into::into),
+        body: body.into(),
         retryable,
-        suggested_action,
+        suggested_action: suggested_action.map(Into::into),
         retry_after,
     })
 }

@@ -2687,6 +2687,16 @@ glob_max_paths = 100
         git(root, &["init", "--quiet", "--initial-branch=main"]);
         git(root, &["config", "user.email", "tests@example.com"]);
         git(root, &["config", "user.name", "Claw Analog Tests"]);
+        let hooks_dir = root.join(".git").join("empty-hooks");
+        std::fs::create_dir_all(&hooks_dir).expect("empty hooks dir");
+        git(
+            root,
+            &[
+                "config",
+                "core.hooksPath",
+                hooks_dir.to_str().expect("hooks path should be utf8"),
+            ],
+        );
 
         std::fs::write(root.join("a.txt"), "a\n").expect("write a");
         git(root, &["add", "a.txt"]);

@@ -108,7 +108,7 @@ jobs:
         run: cargo test --workspace
 
   clippy-workspace:
-    name: cargo clippy --workspace
+    name: cargo clippy --workspace --all-targets -- -D warnings
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,7 +119,7 @@ jobs:
         with:
           workspaces: rust -> target
       - name: Run workspace clippy
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   windows-smoke:
     name: windows PowerShell smoke
