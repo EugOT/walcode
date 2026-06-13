@@ -7,7 +7,7 @@ on:
       - 'gaebal/**'
       - 'omx-issue-*'
     paths:
-      - .github/workflows/rust-ci.yml
+      - .github/workflows/**
       - .github/scripts/check_doc_source_of_truth.py
       - .github/scripts/check_release_readiness.py
       - .github/FUNDING.yml
@@ -29,7 +29,7 @@ on:
     branches:
       - main
     paths:
-      - .github/workflows/rust-ci.yml
+      - .github/workflows/**
       - .github/scripts/check_doc_source_of_truth.py
       - .github/scripts/check_release_readiness.py
       - .github/FUNDING.yml
