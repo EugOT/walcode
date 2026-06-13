@@ -99,7 +99,7 @@ jobs:
         run: cargo fmt --all --check
 
   test-workspace:
-    name: cargo test --workspace
+    name: cargo test --workspace --locked
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,10 +108,10 @@ jobs:
         with:
           workspaces: rust -> target
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   clippy-workspace:
-    name: cargo clippy --workspace --all-targets -- -D warnings
+    name: cargo clippy --workspace --all-targets --locked -- -D warnings
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +122,7 @@ jobs:
         with:
           workspaces: rust -> target
       - name: Run workspace clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   windows-smoke:
     name: windows PowerShell smoke
@@ -138,7 +138,7 @@ jobs:
         with:
           workspaces: rust -> target
       - name: Build CLI for Windows smoke
-        run: cargo build -p rusty-claude-cli
+        run: cargo build -p rusty-claude-cli --locked
       - name: Smoke local commands without live credentials
         env:
           ANTHROPIC_API_KEY: ""

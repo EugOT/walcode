@@ -6904,6 +6904,15 @@ mod tests {
         run_git(path, &["init", "--quiet", "-b", "main"]);
         run_git(path, &["config", "user.email", "tests@example.com"]);
         run_git(path, &["config", "user.name", "Tools Tests"]);
+        let hooks_dir = path.join(".git").join("hooks-disabled");
+        std::fs::create_dir_all(&hooks_dir).expect("create disabled hooks dir");
+        let hooks_dir = hooks_dir.to_string_lossy().into_owned();
+        run_git(path, &["config", "core.hooksPath", &hooks_dir]);
+        let excludes_file = path.join(".git").join("info").join("exclude-empty");
+        std::fs::write(&excludes_file, "").expect("write empty excludes file");
+        let excludes_file = excludes_file.to_string_lossy().into_owned();
+        run_git(path, &["config", "core.excludesFile", &excludes_file]);
+        run_git(path, &["config", "commit.gpgsign", "false"]);
         std::fs::write(path.join("README.md"), "initial\n").expect("write readme");
         run_git(path, &["add", "README.md"]);
         run_git(path, &["commit", "-m", "initial commit", "--quiet"]);
@@ -8481,6 +8490,7 @@ mod tests {
             .join("skills")
             .join("omc-learned")
             .join("learned");
+        fs::create_dir_all(&home).expect("isolated home should exist");
         fs::create_dir_all(&learned_skill_dir).expect("learned skill dir should exist");
         fs::write(
             learned_skill_dir.join("SKILL.md"),
@@ -8492,10 +8502,12 @@ mod tests {
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
         let original_codex_home = std::env::var("CODEX_HOME").ok();
         let original_claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
         std::env::remove_var("CLAW_CONFIG_HOME");
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        std::env::set_current_dir(&home).expect("set isolated cwd");
 
         let result = execute_tool("Skill", &json!({ "skill": "learned" }))
             .expect("learned skill should resolve");
@@ -8523,6 +8535,7 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
+        std::env::set_current_dir(&original_dir).expect("restore cwd");
         fs::remove_dir_all(root).expect("temp tree should clean up");
     }
 
@@ -8534,6 +8547,7 @@ mod tests {
         let claude_config_dir = root.join("claude-config");
         let skill_dir = claude_config_dir.join("skills").join("statusline");
         let command_dir = claude_config_dir.join("commands");
+        fs::create_dir_all(&home).expect("isolated home should exist");
         fs::create_dir_all(&skill_dir).expect("direct skill dir should exist");
         fs::create_dir_all(&command_dir).expect("command dir should exist");
         fs::write(
@@ -8551,10 +8565,12 @@ mod tests {
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
         let original_codex_home = std::env::var("CODEX_HOME").ok();
         let original_claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
         std::env::remove_var("CLAW_CONFIG_HOME");
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        std::env::set_current_dir(&home).expect("set isolated cwd");
 
         let direct_skill =
             execute_tool("Skill", &json!({ "skill": "statusline" })).expect("direct skill");
@@ -8595,6 +8611,7 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
+        std::env::set_current_dir(&original_dir).expect("restore cwd");
         fs::remove_dir_all(root).expect("temp tree should clean up");
     }
 
