@@ -6886,6 +6886,24 @@ mod tests {
         std::env::temp_dir().join(format!("clawd-tools-{unique}-{name}"))
     }
 
+    struct CurrentDirGuard {
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Self {
+            let previous = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(path).expect("set cwd");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
+    }
+
     fn run_git(cwd: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
@@ -6908,7 +6926,9 @@ mod tests {
         std::fs::create_dir_all(&hooks_dir).expect("create disabled hooks dir");
         let hooks_dir = hooks_dir.to_string_lossy().into_owned();
         run_git(path, &["config", "core.hooksPath", &hooks_dir]);
-        let excludes_file = path.join(".git").join("info").join("exclude-empty");
+        let git_info_dir = path.join(".git").join("info");
+        std::fs::create_dir_all(&git_info_dir).expect("create git info dir");
+        let excludes_file = git_info_dir.join("exclude-empty");
         std::fs::write(&excludes_file, "").expect("write empty excludes file");
         let excludes_file = excludes_file.to_string_lossy().into_owned();
         run_git(path, &["config", "core.excludesFile", &excludes_file]);
@@ -8502,12 +8522,11 @@ mod tests {
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
         let original_codex_home = std::env::var("CODEX_HOME").ok();
         let original_claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
         std::env::remove_var("CLAW_CONFIG_HOME");
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
-        std::env::set_current_dir(&home).expect("set isolated cwd");
+        let cwd_guard = CurrentDirGuard::enter(&home);
 
         let result = execute_tool("Skill", &json!({ "skill": "learned" }))
             .expect("learned skill should resolve");
@@ -8535,7 +8554,7 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
-        std::env::set_current_dir(&original_dir).expect("restore cwd");
+        drop(cwd_guard);
         fs::remove_dir_all(root).expect("temp tree should clean up");
     }
 
@@ -8565,12 +8584,11 @@ mod tests {
         let original_config_home = std::env::var("CLAW_CONFIG_HOME").ok();
         let original_codex_home = std::env::var("CODEX_HOME").ok();
         let original_claude_config_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
         std::env::remove_var("CLAW_CONFIG_HOME");
         std::env::remove_var("CODEX_HOME");
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
-        std::env::set_current_dir(&home).expect("set isolated cwd");
+        let cwd_guard = CurrentDirGuard::enter(&home);
 
         let direct_skill =
             execute_tool("Skill", &json!({ "skill": "statusline" })).expect("direct skill");
@@ -8611,7 +8629,7 @@ mod tests {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
-        std::env::set_current_dir(&original_dir).expect("restore cwd");
+        drop(cwd_guard);
         fs::remove_dir_all(root).expect("temp tree should clean up");
     }
 
