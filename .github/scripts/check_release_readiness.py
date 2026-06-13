@@ -5,6 +5,7 @@ The check is intentionally dependency-free so it can run on developer machines,
 Windows CI, and minimal release jobs. It validates:
 
 * required repository policy files exist;
+* workflow files declare explicit top-level permissions and concurrency;
 * local Markdown links and image targets resolve;
 * local heading anchors referenced from Markdown resolve; and
 * command examples do not present the deprecated `cargo install claw-code`
