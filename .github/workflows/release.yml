@@ -49,7 +49,7 @@ jobs:
           workspaces: rust -> target
 
       - name: Build release binary
-        run: cargo build --release -p rusty-claude-cli
+        run: cargo build --release -p rusty-claude-cli --locked
 
       - name: Package artifact and checksum
         shell: bash
