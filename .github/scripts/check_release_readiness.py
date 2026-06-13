@@ -44,6 +44,8 @@ MARKDOWN_ROOTS = [
     ROOT / "rust" / "MOCK_PARITY_HARNESS.md",
 ]
 
+WORKFLOW_ROOT = ROOT / ".github" / "workflows"
+
 LINK_PATTERN = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HTML_LINK_PATTERN = re.compile(r"""<(?:a|img)\b[^>]*(?:href|src)=["']([^"']+)["']""", re.I)
 FENCE_PATTERN = re.compile(r"```(?P<lang>[^\n`]*)\n(?P<body>.*?)```", re.S)
@@ -151,11 +153,33 @@ def validate_command_examples(errors: list[str]) -> None:
                     )
 
 
+def top_level_yaml_keys(path: Path) -> set[str]:
+    keys: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line[0].isspace() or line.lstrip().startswith("#"):
+            continue
+        match = re.match(r"^([A-Za-z0-9_-]+):", line)
+        if match:
+            keys.add(match.group(1))
+    return keys
+
+
+def validate_workflow_policy(errors: list[str]) -> None:
+    for path in sorted(WORKFLOW_ROOT.glob("*.y*ml")):
+        keys = top_level_yaml_keys(path)
+        relative = path.relative_to(ROOT)
+        if "permissions" not in keys:
+            errors.append(f"{relative}: missing explicit top-level permissions")
+        if "concurrency" not in keys:
+            errors.append(f"{relative}: missing explicit top-level concurrency")
+
+
 def main() -> int:
     errors: list[str] = []
     validate_policies(errors)
     validate_markdown_links(errors)
     validate_command_examples(errors)
+    validate_workflow_policy(errors)
     if errors:
         print("release-readiness check failed:", file=sys.stderr)
         for error in errors:
