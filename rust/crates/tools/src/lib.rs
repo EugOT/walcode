@@ -10306,6 +10306,9 @@ mod tests {
 
     #[test]
     fn repl_executes_python_code() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = execute_tool(
             "REPL",
             &json!({"language": "python", "code": "print(1 + 1)", "timeout_ms": 500}),
@@ -10335,6 +10338,9 @@ mod tests {
 
     #[test]
     fn given_timeout_ms_when_repl_blocks_then_returns_timeout_error() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = execute_tool(
             "REPL",
             &json!({
@@ -10597,12 +10603,24 @@ printf 'pwsh:%s' "$1"
 
     #[test]
     fn given_read_only_enforcer_when_glob_search_then_not_permission_denied() {
-        let registry = read_only_registry();
-        let result = registry.execute("glob_search", &json!({ "pattern": "*.rs" }));
-        assert!(
-            result.is_ok(),
-            "glob_search should be allowed in read-only mode: {result:?}"
-        );
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let root = temp_path("perm-glob");
+        fs::create_dir_all(root.join("src")).expect("create fixture root");
+        fs::write(root.join("src").join("lib.rs"), "fn main() {}\n").expect("write fixture");
+
+        {
+            let _cwd_guard = CurrentDirGuard::enter(&root);
+            let registry = read_only_registry();
+            let result = registry.execute("glob_search", &json!({ "pattern": "**/*.rs" }));
+            assert!(
+                result.is_ok(),
+                "glob_search should be allowed in read-only mode: {result:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
