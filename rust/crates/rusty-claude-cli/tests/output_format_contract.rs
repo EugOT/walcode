@@ -3223,6 +3223,7 @@ fn short_p_flag_swallows_no_flags_755() {
         .args(["-p", "hello", "--output-format", "json"])
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
         .output()
         .expect("claw -p should run");
     assert!(
@@ -5107,6 +5108,7 @@ fn skills_lifecycle_errors_have_typed_local_json_795_431() {
         ("HOME", home.to_str().expect("utf8 home")),
         ("ANTHROPIC_API_KEY", ""),
         ("ANTHROPIC_AUTH_TOKEN", ""),
+        ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
         ("OPENAI_API_KEY", ""),
     ];
 
@@ -5793,6 +5795,7 @@ fn compact_flag_missing_argument_and_shorthand_prompt_contract_435() {
         ("HOME", home.to_str().expect("home utf8")),
         ("ANTHROPIC_API_KEY", ""),
         ("ANTHROPIC_AUTH_TOKEN", ""),
+        ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
         ("OPENAI_API_KEY", ""),
     ];
 

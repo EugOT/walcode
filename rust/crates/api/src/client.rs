@@ -23,6 +23,11 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
+        if !providers::provider_allowed_by_runtime_policy(&resolved_model) {
+            return Err(ApiError::Auth(format!(
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude CLI, Codex CLI, Antigravity, or a local approved endpoint"
+            )));
+        }
         match providers::detect_provider_kind(&resolved_model) {
             ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
                 Some(auth) => AnthropicClient::from_auth(auth),
@@ -153,8 +158,6 @@ pub fn read_xai_base_url() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-
     use super::ProviderClient;
     use crate::providers::{detect_provider_kind, resolve_model_alias, ProviderKind};
 
@@ -162,10 +165,7 @@ mod tests {
     /// environment variables so concurrent test threads cannot observe
     /// each other's partially-applied state.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::test_env::lock()
     }
 
     #[test]
@@ -181,6 +181,60 @@ mod tests {
         assert_eq!(
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::Anthropic
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_explicit_anthropic_auth() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_token = EnvVarGuard::set("ANTHROPIC_AUTH_TOKEN", None);
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
+
+        let err = ProviderClient::from_model_with_anthropic_auth(
+            "claude-sonnet-4-6",
+            Some(crate::providers::anthropic::AuthSource::ApiKey(
+                "test-anthropic-key".into(),
+            )),
+        )
+        .expect_err("direct Anthropic provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_direct_openai_default_endpoint() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openai-key"));
+        let _openai_base = EnvVarGuard::set("OPENAI_BASE_URL", None);
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        let err = ProviderClient::from_model("openai/gpt-4.1-mini")
+            .expect_err("direct OpenAI provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_openrouter_compatible_endpoint() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openrouter-key"));
+        let _openai_base =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("https://openrouter.ai/api/v1"));
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        let err = ProviderClient::from_model("local/qwen2.5-coder")
+            .expect_err("OpenRouter-compatible provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
         );
     }
 

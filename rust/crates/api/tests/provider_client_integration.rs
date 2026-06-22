@@ -33,18 +33,22 @@ fn provider_client_reports_missing_xai_credentials_for_grok_models() {
 }
 
 #[test]
-fn provider_client_uses_explicit_anthropic_auth_without_env_lookup() {
+fn provider_client_blocks_explicit_anthropic_auth() {
     let _lock = env_lock();
     let _anthropic_api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", None);
     let _anthropic_auth_token = EnvVarGuard::set("ANTHROPIC_AUTH_TOKEN", None);
+    let _anthropic_base_url = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
 
-    let client = ProviderClient::from_model_with_anthropic_auth(
+    let error = ProviderClient::from_model_with_anthropic_auth(
         "claude-sonnet-4-6",
         Some(AuthSource::ApiKey("anthropic-test-key".to_string())),
     )
-    .expect("explicit anthropic auth should avoid env lookup");
+    .expect_err("explicit Anthropic auth must still obey runtime policy");
 
-    assert_eq!(client.provider_kind(), ProviderKind::Anthropic);
+    assert!(
+        error.to_string().contains("disabled by runtime policy"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

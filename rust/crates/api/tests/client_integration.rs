@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Duration;
@@ -20,6 +21,28 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.get_or_init(|| StdMutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn unset(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.original.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
 }
 
 #[tokio::test]
@@ -510,43 +533,19 @@ async fn retries_retryable_failures_before_succeeding() {
 }
 
 #[tokio::test]
-async fn provider_client_dispatches_anthropic_requests() {
-    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
-    let server = spawn_server(
-        state.clone(),
-        vec![http_response(
-            "200 OK",
-            "application/json",
-            "{\"id\":\"msg_provider\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Dispatched\"}],\"model\":\"claude-3-7-sonnet-latest\",\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}",
-        )],
-    )
-    .await;
+async fn provider_client_blocks_direct_anthropic_dispatch() {
+    let _lock = env_lock();
+    let _anthropic_base = EnvVarGuard::unset("ANTHROPIC_BASE_URL");
 
-    let client = ProviderClient::from_model_with_anthropic_auth(
+    let error = ProviderClient::from_model_with_anthropic_auth(
         "claude-sonnet-4-6",
         Some(AuthSource::ApiKey("test-key".to_string())),
     )
-    .expect("anthropic provider client should be constructed");
-    let client = match client {
-        ProviderClient::Anthropic(client) => {
-            ProviderClient::Anthropic(client.with_base_url(server.base_url()))
-        }
-        other => panic!("expected anthropic provider, got {other:?}"),
-    };
+    .expect_err("direct Anthropic provider dispatch must be blocked by runtime policy");
 
-    let response = client
-        .send_message(&sample_request(false))
-        .await
-        .expect("provider-dispatched request should succeed");
-
-    assert_eq!(response.total_tokens(), 5);
-
-    let captured = state.lock().await;
-    let request = captured.first().expect("server should capture request");
-    assert_eq!(request.path, "/v1/messages");
-    assert_eq!(
-        request.headers.get("x-api-key").map(String::as_str),
-        Some("test-key")
+    assert!(
+        error.to_string().contains("disabled by runtime policy"),
+        "unexpected error: {error}"
     );
 }
 
