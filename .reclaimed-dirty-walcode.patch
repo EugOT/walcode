@@ -1,0 +1,770 @@
+diff --git a/rust/crates/api/src/client.rs b/rust/crates/api/src/client.rs
+index 240559e..91af23a 100644
+--- a/rust/crates/api/src/client.rs
++++ b/rust/crates/api/src/client.rs
+@@ -20,14 +20,14 @@ impl ProviderClient {
+ 
+     pub fn from_model_with_anthropic_auth(
+         model: &str,
+-        anthropic_auth: Option<AuthSource>,
++        _anthropic_auth: Option<AuthSource>,
+     ) -> Result<Self, ApiError> {
+         let resolved_model = providers::resolve_model_alias(model);
+         match providers::detect_provider_kind(&resolved_model) {
+-            ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
+-                Some(auth) => AnthropicClient::from_auth(auth),
+-                None => AnthropicClient::from_env()?,
+-            })),
++            ProviderKind::Anthropic => Err(ApiError::RuntimePolicy {
++                provider: "Anthropic/Claude",
++                allowed_path: "Claude Code CLI (`claude -p`) or an approved Claude agent runtime",
++            }),
+             ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
+                 OpenAiCompatConfig::xai(),
+             )?)),
+@@ -49,6 +49,16 @@ impl ProviderClient {
+                         }
+                         _ => OpenAiCompatConfig::openai(),
+                     };
++                    if config.provider_name == "OpenAI" {
++                        let base_url = openai_compat::read_base_url(config);
++                        if !is_local_openai_compatible_base_url(&base_url) {
++                            return Err(ApiError::RuntimePolicy {
++                                provider: "OpenAI/GPT",
++                                allowed_path:
++                                    "Codex CLI, Codex app, Codex Agents SDK, or Codex ACP",
++                            });
++                        }
++                    }
+                     Ok(Self::OpenAi(OpenAiCompatClient::from_env(config)?))
+                 }
+             }
+@@ -115,6 +125,33 @@ impl ProviderClient {
+     }
+ }
+ 
++fn is_local_openai_compatible_base_url(url: &str) -> bool {
++    let lower = url.to_ascii_lowercase();
++    lower.starts_with("http://127.0.0.1")
++        || lower.starts_with("http://localhost")
++        || lower.starts_with("http://0.0.0.0")
++        || lower.starts_with("http://[::1]")
++        || lower.starts_with("http://10.")
++        || lower.starts_with("http://192.168.")
++        || lower.starts_with("http://172.16.")
++        || lower.starts_with("http://172.17.")
++        || lower.starts_with("http://172.18.")
++        || lower.starts_with("http://172.19.")
++        || lower.starts_with("http://172.20.")
++        || lower.starts_with("http://172.21.")
++        || lower.starts_with("http://172.22.")
++        || lower.starts_with("http://172.23.")
++        || lower.starts_with("http://172.24.")
++        || lower.starts_with("http://172.25.")
++        || lower.starts_with("http://172.26.")
++        || lower.starts_with("http://172.27.")
++        || lower.starts_with("http://172.28.")
++        || lower.starts_with("http://172.29.")
++        || lower.starts_with("http://172.30.")
++        || lower.starts_with("http://172.31.")
++        || lower.starts_with("http://100.")
++}
++
+ #[derive(Debug)]
+ pub enum MessageStream {
+     Anthropic(anthropic::MessageStream),
+@@ -156,6 +193,7 @@ mod tests {
+     use std::sync::{Mutex, OnceLock};
+ 
+     use super::ProviderClient;
++    use crate::error::ApiError;
+     use crate::providers::{detect_provider_kind, resolve_model_alias, ProviderKind};
+ 
+     /// Serializes every test in this module that mutates process-wide
+@@ -184,6 +222,42 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn anthropic_models_are_disabled_by_runtime_policy() {
++        let error = ProviderClient::from_model("claude-sonnet-4-6")
++            .expect_err("Claude models must not instantiate direct Anthropic API clients");
++        match error {
++            ApiError::RuntimePolicy {
++                provider,
++                allowed_path,
++            } => {
++                assert_eq!(provider, "Anthropic/Claude");
++                assert!(allowed_path.contains("Claude Code CLI"));
++            }
++            other => panic!("expected runtime policy error, got: {other:?}"),
++        }
++    }
++
++    #[test]
++    fn openai_models_are_disabled_by_runtime_policy() {
++        let _lock = env_lock();
++        let _openai = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openai-key"));
++        let _base_url = EnvVarGuard::set("OPENAI_BASE_URL", None);
++
++        let error = ProviderClient::from_model("gpt-5")
++            .expect_err("OpenAI models must not instantiate direct OpenAI API clients");
++        match error {
++            ApiError::RuntimePolicy {
++                provider,
++                allowed_path,
++            } => {
++                assert_eq!(provider, "OpenAI/GPT");
++                assert!(allowed_path.contains("Codex CLI"));
++            }
++            other => panic!("expected runtime policy error, got: {other:?}"),
++        }
++    }
++
+     /// Snapshot-restore guard for a single environment variable. Mirrors
+     /// the pattern used in `providers/mod.rs` tests: captures the original
+     /// value on construction, applies the override, and restores on drop so
+diff --git a/rust/crates/api/src/error.rs b/rust/crates/api/src/error.rs
+index bad54fc..92511c5 100644
+--- a/rust/crates/api/src/error.rs
++++ b/rust/crates/api/src/error.rs
+@@ -43,6 +43,10 @@ pub enum ApiError {
+     },
+     ExpiredOAuthToken,
+     Auth(String),
++    RuntimePolicy {
++        provider: &'static str,
++        allowed_path: &'static str,
++    },
+     InvalidApiKeyEnv(VarError),
+     Http(reqwest::Error),
+     Io(std::io::Error),
+@@ -152,6 +156,7 @@ impl ApiError {
+             | Self::ContextWindowExceeded { .. }
+             | Self::ExpiredOAuthToken
+             | Self::Auth(_)
++            | Self::RuntimePolicy { .. }
+             | Self::InvalidApiKeyEnv(_)
+             | Self::Io(_)
+             | Self::Json { .. }
+@@ -170,6 +175,7 @@ impl ApiError {
+             | Self::ContextWindowExceeded { .. }
+             | Self::ExpiredOAuthToken
+             | Self::Auth(_)
++            | Self::RuntimePolicy { .. }
+             | Self::InvalidApiKeyEnv(_)
+             | Self::Http(_)
+             | Self::Io(_)
+@@ -191,6 +197,7 @@ impl ApiError {
+             Self::MissingCredentials { .. } | Self::ExpiredOAuthToken | Self::Auth(_) => {
+                 "provider_auth"
+             }
++            Self::RuntimePolicy { .. } => "runtime_policy",
+             Self::Api { status, .. } if matches!(status.as_u16(), 401 | 403) => "provider_auth",
+             Self::ContextWindowExceeded { .. } => "context_window",
+             Self::Api { .. } if self.is_context_window_failure() => "context_window",
+@@ -219,6 +226,7 @@ impl ApiError {
+             | Self::ContextWindowExceeded { .. }
+             | Self::ExpiredOAuthToken
+             | Self::Auth(_)
++            | Self::RuntimePolicy { .. }
+             | Self::InvalidApiKeyEnv(_)
+             | Self::Http(_)
+             | Self::Io(_)
+@@ -249,6 +257,7 @@ impl ApiError {
+             Self::MissingCredentials { .. }
+             | Self::ExpiredOAuthToken
+             | Self::Auth(_)
++            | Self::RuntimePolicy { .. }
+             | Self::InvalidApiKeyEnv(_)
+             | Self::Http(_)
+             | Self::Io(_)
+@@ -312,6 +321,13 @@ impl Display for ApiError {
+                 )
+             }
+             Self::Auth(message) => write!(f, "auth error: {message}"),
++            Self::RuntimePolicy {
++                provider,
++                allowed_path,
++            } => write!(
++                f,
++                "{provider} direct API usage is disabled by runtime policy; use {allowed_path}"
++            ),
+             Self::InvalidApiKeyEnv(error) => {
+                 write!(f, "failed to read credential environment variable: {error}")
+             }
+diff --git a/rust/crates/claw-analog/src/doctor.rs b/rust/crates/claw-analog/src/doctor.rs
+index 2d19323..0e54a55 100644
+--- a/rust/crates/claw-analog/src/doctor.rs
++++ b/rust/crates/claw-analog/src/doctor.rs
+@@ -11,7 +11,7 @@ use claw_analog::{
+     AnalogFileConfig, OutputFormat, PermissionMode, Preset, StreamOverride, NDJSON_FORMAT_VERSION,
+     NDJSON_SCHEMA,
+ };
+-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
++use reqwest::header::HeaderMap;
+ 
+ const ENV_CHECK: &[&str] = &[
+     "ANTHROPIC_API_KEY",
+@@ -338,18 +338,16 @@ fn check_env() {
+         .unwrap_or(false);
+     println!();
+     if anthro_ok {
+-        println!("Anthropic credentials: OK (API key and/or auth token).");
++        println!("Anthropic credentials: set, but direct Anthropic API use is disabled by runtime policy.");
+     } else {
+-        println!("Anthropic credentials: not set — needed for default Claude/Anthropic models.");
++        println!("Anthropic credentials: unset; use Claude Code CLI or an approved Claude agent runtime.");
+     }
+     if openai_ok {
+-        println!("OpenAI API key: set — use `openai/...` model prefix for that provider.");
++        println!("OpenAI API key: set, but direct OpenAI API use is disabled by runtime policy.");
+     } else {
+-        println!("OpenAI API key: unset — only relevant for `openai/` models.");
+-    }
+-    if !anthro_ok && !openai_ok {
+-        println!("\nNote: neither Anthropic nor OpenAI keys are set; live runs will fail until you export credentials (see USAGE.md).");
++        println!("OpenAI API key: unset; use Codex CLI/app/Agents SDK/ACP for GPT-family models.");
+     }
++    println!("Gemini-family models must route through Antigravity/antigravity-cli.");
+ }
+ 
+ /// Walk upward from `start` for a `Cargo.toml` that defines `[workspace]`.
+@@ -439,10 +437,6 @@ fn run_cargo_release_build(manifest_dir: Option<&Path>) -> bool {
+     }
+ }
+ 
+-fn default_anthropic_base() -> String {
+-    std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into())
+-}
+-
+ fn parse_host_port(url: &str) -> Result<(String, u16), String> {
+     let url = url.trim().trim_end_matches('/');
+     let (scheme, rest) = if let Some(r) = url.strip_prefix("https://") {
+@@ -468,14 +462,19 @@ fn parse_host_port(url: &str) -> Result<(String, u16), String> {
+ }
+ 
+ fn ping_print() {
+-    let url = default_anthropic_base();
+-    println!("TCP check for ANTHROPIC_BASE_URL (default if unset): {url}");
+-    match parse_host_port(&url) {
+-        Ok((host, port)) => match tcp_ping(&host, port) {
+-            Ok(()) => println!("  reachability: OK ({host}:{port})"),
+-            Err(e) => println!("  reachability: FAIL ({host}:{port}) — {e}"),
+-        },
+-        Err(e) => println!("  could not parse URL: {e}"),
++    println!("Direct Anthropic/OpenAI provider ping is disabled by runtime policy.");
++    if let Ok(base) = std::env::var("RAG_BASE_URL") {
++        let url = base.trim();
++        if !url.is_empty() {
++            println!("TCP check for RAG_BASE_URL: {url}");
++            match parse_host_port(url) {
++                Ok((host, port)) => match tcp_ping(&host, port) {
++                    Ok(()) => println!("  reachability: OK ({host}:{port})"),
++                    Err(e) => println!("  reachability: FAIL ({host}:{port}) — {e}"),
++                },
++                Err(e) => println!("  could not parse URL: {e}"),
++            }
++        }
+     }
+     println!("  (HTTP/TLS application data is not validated; this is connect() only.)");
+ }
+@@ -502,75 +501,9 @@ fn http_checks_print(embeddings_check: bool) {
+     };
+ 
+     rt.block_on(async {
+-        // OpenAI-compatible providers (OPENAI_BASE_URL, OPENAI_API_KEY)
+-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+-            if !key.trim().is_empty() {
+-                let base = std::env::var("OPENAI_BASE_URL")
+-                    .ok()
+-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+-                let url = openai_models_url(base.as_str());
+-                let mut headers = HeaderMap::new();
+-                if let Ok(v) = HeaderValue::from_str(format!("Bearer {}", key.trim()).as_str()) {
+-                    headers.insert(reqwest::header::AUTHORIZATION, v);
+-                }
+-                let _ = http_check_and_print("openai", url.as_str(), headers).await;
+-
+-                if embeddings_check {
+-                    let model = std::env::var("OPENAI_EMBEDDING_MODEL")
+-                        .ok()
+-                        .or_else(|| std::env::var("CLAW_RAG_EMBEDDING_MODEL").ok())
+-                        .unwrap_or_else(|| "text-embedding-3-small".to_string());
+-                    let eurl = openai_embeddings_url(base.as_str());
+-                    let mut eheaders = HeaderMap::new();
+-                    if let Ok(v) = HeaderValue::from_str(format!("Bearer {}", key.trim()).as_str())
+-                    {
+-                        eheaders.insert(reqwest::header::AUTHORIZATION, v);
+-                    }
+-                    let _ = openai_embeddings_probe(
+-                        "openai embeddings",
+-                        eurl.as_str(),
+-                        &model,
+-                        eheaders,
+-                    )
+-                    .await;
+-                } else {
+-                    println!("  openai embeddings: skipped (pass --embeddings-check to enable)");
+-                }
+-            } else {
+-                println!("  openai: skipped (OPENAI_API_KEY empty)");
+-            }
+-        } else {
+-            println!("  openai: skipped (OPENAI_API_KEY unset)");
+-        }
+-
+-        // Anthropic (ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY/AUTH_TOKEN)
+-        let a_key = std::env::var("ANTHROPIC_API_KEY").ok();
+-        let a_tok = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
+-        let a_base = std::env::var("ANTHROPIC_BASE_URL")
+-            .ok()
+-            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+-        if a_key.as_deref().is_some_and(|s| !s.trim().is_empty())
+-            || a_tok.as_deref().is_some_and(|s| !s.trim().is_empty())
+-        {
+-            let url = anthropic_models_url(a_base.as_str());
+-            let mut headers = HeaderMap::new();
+-            headers.insert(
+-                HeaderName::from_static("anthropic-version"),
+-                HeaderValue::from_static("2023-06-01"),
+-            );
+-            if let Some(k) = a_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+-                if let Ok(v) = HeaderValue::from_str(k) {
+-                    headers.insert(HeaderName::from_static("x-api-key"), v);
+-                }
+-            } else if let Some(t) = a_tok.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+-                if let Ok(v) = HeaderValue::from_str(format!("Bearer {t}").as_str()) {
+-                    headers.insert(reqwest::header::AUTHORIZATION, v);
+-                }
+-            }
+-            let _ = http_check_and_print("anthropic", url.as_str(), headers).await;
+-        } else {
+-            println!("  anthropic: skipped (no API key/token)");
+-        }
++        println!("  openai: skipped (direct OpenAI API checks disabled by runtime policy)");
++        println!("  openai embeddings: skipped (direct OpenAI embedding checks disabled by runtime policy)");
++        println!("  anthropic: skipped (direct Anthropic API checks disabled by runtime policy)");
+ 
+         // RAG service (RAG_BASE_URL) — just basic health + stats.
+         if let Ok(base) = std::env::var("RAG_BASE_URL") {
+@@ -589,29 +522,6 @@ fn http_checks_print(embeddings_check: bool) {
+     println!("  (TLS validation is performed by the HTTP client; certificate errors surface as request failures.)");
+ }
+ 
+-fn openai_models_url(base: &str) -> String {
+-    let b = base.trim().trim_end_matches('/');
+-    if b.ends_with("/v1") {
+-        format!("{b}/models")
+-    } else {
+-        format!("{b}/v1/models")
+-    }
+-}
+-
+-fn openai_embeddings_url(base: &str) -> String {
+-    let b = base.trim().trim_end_matches('/');
+-    if b.ends_with("/v1") {
+-        format!("{b}/embeddings")
+-    } else {
+-        format!("{b}/v1/embeddings")
+-    }
+-}
+-
+-fn anthropic_models_url(base: &str) -> String {
+-    let b = base.trim().trim_end_matches('/');
+-    format!("{b}/v1/models?limit=1")
+-}
+-
+ async fn http_check_and_print(label: &str, url: &str, headers: HeaderMap) -> Result<(), ()> {
+     let client = reqwest::Client::builder()
+         .timeout(Duration::from_secs(8))
+@@ -666,55 +576,6 @@ fn print_quota_headers(headers: &HeaderMap) {
+     }
+ }
+ 
+-async fn openai_embeddings_probe(
+-    label: &str,
+-    url: &str,
+-    model: &str,
+-    headers: HeaderMap,
+-) -> Result<(), ()> {
+-    let client = reqwest::Client::builder()
+-        .timeout(Duration::from_secs(12))
+-        .build();
+-    let Ok(client) = client else {
+-        println!("  {label}: FAIL (client build)");
+-        return Err(());
+-    };
+-
+-    // Minimal request: one short string. We don't parse the embedding content.
+-    let body = serde_json::json!({
+-        "model": model,
+-        "input": ["ping"]
+-    });
+-
+-    let resp = client.post(url).headers(headers).json(&body).send().await;
+-    match resp {
+-        Ok(r) => {
+-            let status = r.status();
+-            println!("  {label}: {status} ({url}) model={model}");
+-            print_quota_headers(r.headers());
+-            if !status.is_success() {
+-                let t = r.text().await.unwrap_or_default();
+-                if !t.trim().is_empty() {
+-                    println!("    body: {}", t.chars().take(400).collect::<String>());
+-                }
+-                return Err(());
+-            }
+-            Ok(())
+-        }
+-        Err(e) => {
+-            let msg = e.to_string();
+-            if msg.to_ascii_lowercase().contains("certificate")
+-                || msg.to_ascii_lowercase().contains("tls")
+-            {
+-                println!("  {label}: FAIL (TLS/cert) ({url}) — {msg}");
+-            } else {
+-                println!("  {label}: FAIL ({url}) — {msg}");
+-            }
+-            Err(())
+-        }
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -726,8 +587,8 @@ mod tests {
+             ("127.0.0.1".into(), 8080)
+         );
+         assert_eq!(
+-            parse_host_port("https://api.anthropic.com").unwrap(),
+-            ("api.anthropic.com".into(), 443)
++            parse_host_port("https://rag.example.com").unwrap(),
++            ("rag.example.com".into(), 443)
+         );
+     }
+ }
+diff --git a/rust/crates/claw-rag-service/src/embed.rs b/rust/crates/claw-rag-service/src/embed.rs
+index 27d6905..d1e5149 100644
+--- a/rust/crates/claw-rag-service/src/embed.rs
++++ b/rust/crates/claw-rag-service/src/embed.rs
+@@ -1,4 +1,4 @@
+-//! OpenAI-compatible embeddings HTTP client.
++//! Embeddings HTTP client for explicit non-forbidden compatible/local endpoints.
+ 
+ use reqwest::Client;
+ use serde::{Deserialize, Serialize};
+@@ -12,15 +12,20 @@ pub struct EmbedConfig {
+ 
+ impl EmbedConfig {
+     pub fn from_env() -> Result<Self, String> {
+-        let api_key = std::env::var("CLAW_RAG_OPENAI_API_KEY")
+-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+-            .map_err(|_| {
+-                "set CLAW_RAG_OPENAI_API_KEY or OPENAI_API_KEY for embeddings".to_string()
+-            })?;
+-        let base_url = std::env::var("CLAW_RAG_EMBEDDING_BASE_URL")
+-            .unwrap_or_else(|_| "https://api.openai.com/v1".into());
++        let api_key = std::env::var("CLAW_RAG_EMBEDDING_API_KEY").map_err(|_| {
++            "set CLAW_RAG_EMBEDDING_API_KEY for an explicit non-forbidden embedding endpoint, or set CLAW_RAG_MOCK_PROVIDERS=1 for mock vectors".to_string()
++        })?;
++        let base_url = std::env::var("CLAW_RAG_EMBEDDING_BASE_URL").map_err(|_| {
++            "set CLAW_RAG_EMBEDDING_BASE_URL to a non-forbidden compatible/local embedding endpoint, or set CLAW_RAG_MOCK_PROVIDERS=1".to_string()
++        })?;
++        if is_forbidden_direct_embedding_base_url(&base_url) {
++            return Err(
++                "direct OpenAI/Google/Vertex embedding endpoints are disabled by runtime policy"
++                    .to_string(),
++            );
++        }
+         let model = std::env::var("CLAW_RAG_EMBEDDING_MODEL")
+-            .unwrap_or_else(|_| "text-embedding-3-small".into());
++            .unwrap_or_else(|_| "local-embedding-model".into());
+         Ok(Self {
+             api_key,
+             base_url: base_url.trim_end_matches('/').to_string(),
+@@ -43,6 +48,13 @@ impl EmbedConfig {
+     }
+ }
+ 
++fn is_forbidden_direct_embedding_base_url(base_url: &str) -> bool {
++    base_url.contains("api.openai.com")
++        || base_url.contains("openai.azure.com")
++        || base_url.contains("generativelanguage.googleapis.com")
++        || base_url.contains("aiplatform.googleapis.com")
++}
++
+ #[derive(Serialize)]
+ struct EmbeddingsRequest<'a> {
+     model: &'a str,
+diff --git a/rust/crates/commands/src/lib.rs b/rust/crates/commands/src/lib.rs
+index 7908691..f024871 100644
+--- a/rust/crates/commands/src/lib.rs
++++ b/rust/crates/commands/src/lib.rs
+@@ -1407,7 +1407,7 @@ pub fn validate_slash_command_input(
+         }
+         "login" | "logout" => {
+             return Err(command_error(
+-                "This auth flow was removed. Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead.",
++                "This auth flow was removed. Use Claude Code CLI or an approved Claude agent runtime for Claude-family models.",
+                 command,
+                 "",
+             ));
+@@ -5959,11 +5959,11 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn removed_login_and_logout_commands_report_env_auth_guidance() {
++    fn removed_login_and_logout_commands_report_runtime_guidance() {
+         let login_error = parse_error_message("/login");
+-        assert!(login_error.contains("ANTHROPIC_API_KEY"));
++        assert!(login_error.contains("Claude Code CLI"));
+         let logout_error = parse_error_message("/logout");
+-        assert!(logout_error.contains("ANTHROPIC_AUTH_TOKEN"));
++        assert!(logout_error.contains("approved Claude agent runtime"));
+     }
+ 
+     #[test]
+diff --git a/rust/crates/rusty-claude-cli/src/main.rs b/rust/crates/rusty-claude-cli/src/main.rs
+index 54f4130..0d9fc99 100644
+--- a/rust/crates/rusty-claude-cli/src/main.rs
++++ b/rust/crates/rusty-claude-cli/src/main.rs
+@@ -635,13 +635,13 @@ fn invalid_output_format_value(message: &str) -> Option<String> {
+ fn fallback_hint_for_error_kind(kind: &str) -> Option<&'static str> {
+     match kind {
+         "api_auth_error" => {
+-            Some("Check that ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set and valid.")
++            Some("Use Claude Code CLI or an approved Claude agent runtime for Claude-family models.")
+         }
+         "api_rate_limit_error" => {
+             Some("You have hit the API rate limit. Wait and retry, or reduce request frequency.")
+         }
+         "missing_credentials" => {
+-            Some("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN before running claw.")
++            Some("Use Claude Code CLI, Codex CLI/app/ACP, or Antigravity instead of direct provider API credentials.")
+         }
+         "config_parse_error" => Some(
+             "Fix the JSON syntax or schema in the referenced .claw/settings.json or .claw.json file, then rerun the command.",
+@@ -2526,7 +2526,7 @@ fn compact_interactive_only_error() -> String {
+ fn removed_auth_surface_error(command_name: &str) -> String {
+     // #765: two-line format so split_error_hint() extracts hint into JSON envelope
+     format!(
+-        "`claw {command_name}` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
++        "`claw {command_name}` has been removed.\nUse Claude Code CLI or an approved Claude agent runtime for Claude-family models."
+     )
+ }
+ 
+@@ -2957,7 +2957,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
+         if trimmed.starts_with("gpt-") || trimmed.starts_with("gpt_") {
+             err_msg.push_str("\nDid you mean `openai/");
+             err_msg.push_str(trimmed);
+-            err_msg.push_str("`? (Requires OPENAI_API_KEY env var)");
++            err_msg.push_str("`? GPT-family models must route through Codex CLI/app/ACP.");
+         } else if trimmed.starts_with("qwen") && trimmed.contains(':') {
+             err_msg.push_str("\nFor a local Ollama model, set `OPENAI_BASE_URL=http://127.0.0.1:11434/v1` before using tagged names like `");
+             err_msg.push_str(trimmed);
+@@ -3832,9 +3832,9 @@ fn check_auth_health() -> DiagnosticCheck {
+         .ok()
+         .is_some_and(|value| !value.trim().is_empty());
+     let any_auth_present = api_key_present || auth_token_present || openai_key_present;
+-    let prompt_ready = any_auth_present;
++    let prompt_ready = false;
+     let env_details = format!(
+-        "Environment       api_key={} auth_token={} openai_key={}",
++        "Forbidden env     anthropic_api_key={} anthropic_auth_token={} openai_api_key={}",
+         if api_key_present { "present" } else { "absent" },
+         if auth_token_present {
+             "present"
+@@ -3852,12 +3852,12 @@ fn check_auth_health() -> DiagnosticCheck {
+         Ok(Some(token_set)) => DiagnosticCheck::new(
+             "Auth",
+             if any_auth_present {
+-                DiagnosticLevel::Ok
++                DiagnosticLevel::Warn
+             } else {
+                 DiagnosticLevel::Warn
+             },
+             if any_auth_present {
+-                "supported auth env vars are configured; legacy saved OAuth is ignored"
++                "direct provider credentials are present but disabled by runtime policy"
+             } else {
+                 "legacy saved OAuth credentials are present but unsupported"
+             },
+@@ -3880,16 +3880,16 @@ fn check_auth_health() -> DiagnosticCheck {
+                     token_set.scopes.join(",")
+                 }
+             ),
+-            "Suggested action  set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN; `claw login` is removed"
++            "Suggested action  use Claude Code CLI, Codex CLI/app/ACP, or Antigravity; `claw login` is removed"
+                 .to_string(),
+         ])
+-        .with_hint("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN env var. The saved OAuth token is no longer accepted.")
++        .with_hint("Direct provider API credentials are disabled by runtime policy.")
+         .with_data(Map::from_iter([
+             ("api_key_present".to_string(), json!(api_key_present)),
+             ("auth_token_present".to_string(), json!(auth_token_present)),
+             ("openai_key_present".to_string(), json!(openai_key_present)),
+             ("prompt_ready".to_string(), json!(prompt_ready)),
+-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
++            ("prompt_blocked_reason".to_string(), json!("runtime_policy")),
+ 
+             ("legacy_saved_oauth_present".to_string(), json!(true)),
+             (
+@@ -3905,24 +3905,24 @@ fn check_auth_health() -> DiagnosticCheck {
+         Ok(None) => DiagnosticCheck::new(
+             "Auth",
+             if any_auth_present {
+-                DiagnosticLevel::Ok
++                DiagnosticLevel::Warn
+             } else {
+                 DiagnosticLevel::Warn
+             },
+             if any_auth_present {
+-                "supported auth env vars are configured"
++                "direct provider credentials are present but disabled by runtime policy"
+             } else {
+-                "no supported auth env vars were found"
++                "no approved CLI/agent runtime was verified by this auth check"
+             },
+         )
+         .with_details(vec![env_details])
+-        .with_hint(if !any_auth_present { "Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN to authenticate." } else { "" })
++        .with_hint("Use approved CLI/agent runtimes instead of direct provider API credentials.")
+         .with_data(Map::from_iter([
+             ("api_key_present".to_string(), json!(api_key_present)),
+             ("auth_token_present".to_string(), json!(auth_token_present)),
+             ("openai_key_present".to_string(), json!(openai_key_present)),
+             ("prompt_ready".to_string(), json!(prompt_ready)),
+-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
++            ("prompt_blocked_reason".to_string(), json!("runtime_policy")),
+             ("legacy_saved_oauth_present".to_string(), json!(false)),
+             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
+             ("legacy_refresh_token_present".to_string(), json!(false)),
+@@ -3933,13 +3933,13 @@ fn check_auth_health() -> DiagnosticCheck {
+             DiagnosticLevel::Fail,
+             format!("failed to inspect legacy saved credentials: {error}"),
+         )
+-        .with_hint("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN env var to authenticate.")
++        .with_hint("Use approved CLI/agent runtimes instead of direct provider API credentials.")
+         .with_data(Map::from_iter([
+             ("api_key_present".to_string(), json!(api_key_present)),
+             ("auth_token_present".to_string(), json!(auth_token_present)),
+             ("openai_key_present".to_string(), json!(openai_key_present)),
+             ("prompt_ready".to_string(), json!(prompt_ready)),
+-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
++            ("prompt_blocked_reason".to_string(), json!("runtime_policy")),
+             ("legacy_saved_oauth_present".to_string(), Value::Null),
+             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
+             ("legacy_refresh_token_present".to_string(), Value::Null),
+@@ -3952,8 +3952,6 @@ fn check_auth_health() -> DiagnosticCheck {
+ /// #466: validate provider BASE_URL env vars
+ fn check_base_url_health() -> DiagnosticCheck {
+     let base_url_vars = [
+-        ("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+-        ("OPENAI_BASE_URL", "https://api.openai.com"),
+         ("XAI_BASE_URL", "https://api.x.ai"),
+         ("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com"),
+     ];
+@@ -12567,48 +12565,9 @@ impl AnthropicRuntimeClient {
+         tool_registry: GlobalToolRegistry,
+         progress_reporter: Option<InternalPromptProgressReporter>,
+     ) -> Result<Self, Box<dyn std::error::Error>> {
+-        // Dispatch to the correct provider at construction time.
+-        // `ApiProviderClient` (exposed by the api crate as
+-        // `ProviderClient`) is an enum over Anthropic / xAI / OpenAI
+-        // variants, where xAI and OpenAI both use the OpenAI-compat
+-        // wire format under the hood. We consult
+-        // `detect_provider_kind(&resolved_model)` so model-name prefix
+-        // routing (`openai/`, `gpt-`, `grok`, `qwen/`) wins over
+-        // env-var presence.
+-        //
+-        // For Anthropic we build the client directly instead of going
+-        // through `ApiProviderClient::from_model_with_anthropic_auth`
+-        // so we can explicitly apply `api::read_base_url()` — that
+-        // reads `ANTHROPIC_BASE_URL` and is required for the local
+-        // mock-server test harness
+-        // (`crates/rusty-claude-cli/tests/compact_output.rs`) to point
+-        // claw at its fake Anthropic endpoint. We also attach a
+-        // session-scoped prompt cache on the Anthropic path; the
+-        // prompt cache is Anthropic-only so non-Anthropic variants
+-        // skip it.
+         let resolved_model = api::resolve_model_alias(&model);
+-        let client = match detect_provider_kind(&resolved_model) {
+-            ProviderKind::Anthropic => {
+-                let auth = resolve_cli_auth_source()?;
+-                let inner = AnthropicClient::from_auth(auth)
+-                    .with_base_url(api::read_base_url())
+-                    .with_prompt_cache(PromptCache::new(session_id));
+-                ApiProviderClient::Anthropic(inner)
+-            }
+-            ProviderKind::Xai | ProviderKind::OpenAi => {
+-                // The api crate's `ProviderClient::from_model_with_anthropic_auth`
+-                // with `None` for the anthropic auth routes via
+-                // `detect_provider_kind` and builds an
+-                // `OpenAiCompatClient::from_env` with the matching
+-                // `OpenAiCompatConfig` (openai / xai / dashscope).
+-                // That reads the correct API-key env var and BASE_URL
+-                // override internally, so this one call covers OpenAI,
+-                // OpenRouter, xAI, DashScope, Ollama, and any other
+-                // OpenAI-compat endpoint users configure via
+-                // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
+-                ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
+-            }
+-        };
++        let _ = detect_provider_kind(&resolved_model);
++        let client = ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?;
+         Ok(Self {
+             runtime: tokio::runtime::Runtime::new()?,
+             client,
+@@ -12634,7 +12593,10 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
+ 
+ #[allow(clippy::result_large_err)]
+ fn resolve_cli_auth_source_for_cwd() -> Result<AuthSource, api::ApiError> {
+-    resolve_startup_auth_source(|| Ok(None))
++    Err(api::ApiError::RuntimePolicy {
++        provider: "Anthropic/Claude",
++        allowed_path: "Claude Code CLI (`claude -p`) or an approved Claude agent runtime",
++    })
+ }
+ 
+ impl ApiClient for AnthropicRuntimeClient {
+@@ -14788,7 +14750,7 @@ mod tests {
+         }
+         std::fs::remove_dir_all(config_home).expect("temp config home should clean up");
+ 
+-        assert!(error.to_string().contains("ANTHROPIC_API_KEY"));
++        assert!(error.to_string().contains("Claude Code CLI"));
+     }
+ 
+     #[test]
+@@ -15324,9 +15286,9 @@ mod tests {
+     #[test]
+     fn removed_login_and_logout_subcommands_error_helpfully() {
+         let login = parse_args(&["login".to_string()]).expect_err("login should be removed");
+-        assert!(login.contains("ANTHROPIC_API_KEY"));
++        assert!(login.contains("Claude Code CLI"));
+         let logout = parse_args(&["logout".to_string()]).expect_err("logout should be removed");
+-        assert!(logout.contains("ANTHROPIC_AUTH_TOKEN"));
++        assert!(logout.contains("approved Claude agent runtime"));
+         assert_eq!(
+             parse_args(&["doctor".to_string()]).expect("doctor should parse"),
+             CliAction::Doctor {
+@@ -16445,7 +16407,7 @@ mod tests {
+         // #765: removed auth subcommands must classify as removed_subcommand
+         assert_eq!(
+             classify_error_kind(
+-                "`claw login` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
++                "`claw login` has been removed.\nUse Claude Code CLI or an approved Claude agent runtime for Claude-family models."
+             ),
+             "removed_subcommand"
+         );
+@@ -16458,7 +16420,7 @@ mod tests {
+         );
+         assert_eq!(
+             classify_error_kind(
+-                "`claw logout` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
++                "`claw logout` has been removed.\nUse Claude Code CLI or an approved Claude agent runtime for Claude-family models."
+             ),
+             "removed_subcommand"
+         );
