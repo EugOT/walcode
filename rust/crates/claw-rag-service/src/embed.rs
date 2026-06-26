@@ -12,13 +12,17 @@ pub struct EmbedConfig {
 
 impl EmbedConfig {
     pub fn from_env() -> Result<Self, String> {
-        let api_key = std::env::var("CLAW_RAG_OPENAI_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .map_err(|_| {
-                "set CLAW_RAG_OPENAI_API_KEY or OPENAI_API_KEY for embeddings".to_string()
-            })?;
-        let base_url = std::env::var("CLAW_RAG_EMBEDDING_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        let api_key = std::env::var("CLAW_RAG_EMBEDDING_API_KEY")
+            .map_err(|_| "set CLAW_RAG_EMBEDDING_API_KEY for embeddings".to_string())?;
+        let base_url = std::env::var("CLAW_RAG_EMBEDDING_BASE_URL").map_err(|_| {
+            "set CLAW_RAG_EMBEDDING_BASE_URL to an approved local/private embedding endpoint"
+                .to_string()
+        })?;
+        if is_forbidden_provider_base_url(&base_url) {
+            return Err(
+                "direct provider embedding endpoints are disabled by runtime policy".to_string(),
+            );
+        }
         let model = std::env::var("CLAW_RAG_EMBEDDING_MODEL")
             .unwrap_or_else(|_| "text-embedding-3-small".into());
         Ok(Self {
@@ -41,6 +45,18 @@ impl EmbedConfig {
             model: "mock-embedding".into(),
         })
     }
+}
+
+fn is_forbidden_provider_base_url(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    [
+        "api.openai.com",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com",
+    ]
+    .iter()
+    .any(|host| lower.contains(host))
 }
 
 #[derive(Serialize)]
@@ -126,4 +142,79 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (na * nb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let original = std::env::var_os(key);
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_requires_explicit_embedding_endpoint() {
+        let _lock = env_lock();
+        let _key = EnvGuard::set("CLAW_RAG_EMBEDDING_API_KEY", Some("test-key"));
+        let _base = EnvGuard::set("CLAW_RAG_EMBEDDING_BASE_URL", None);
+
+        let err = EmbedConfig::from_env().expect_err("base URL should be required");
+        assert!(err.contains("CLAW_RAG_EMBEDDING_BASE_URL"), "{err}");
+    }
+
+    #[test]
+    fn from_env_rejects_direct_provider_endpoint() {
+        let _lock = env_lock();
+        let _key = EnvGuard::set("CLAW_RAG_EMBEDDING_API_KEY", Some("test-key"));
+        let _base = EnvGuard::set(
+            "CLAW_RAG_EMBEDDING_BASE_URL",
+            Some("https://api.openai.com/v1"),
+        );
+
+        let err = EmbedConfig::from_env().expect_err("direct provider URL should be rejected");
+        assert!(err.contains("disabled by runtime policy"), "{err}");
+    }
+
+    #[test]
+    fn from_env_accepts_local_embedding_endpoint() {
+        let _lock = env_lock();
+        let _key = EnvGuard::set("CLAW_RAG_EMBEDDING_API_KEY", Some("test-key"));
+        let _base = EnvGuard::set(
+            "CLAW_RAG_EMBEDDING_BASE_URL",
+            Some("http://127.0.0.1:11434/v1/"),
+        );
+
+        let cfg = EmbedConfig::from_env().expect("local endpoint should be accepted");
+        assert_eq!(cfg.base_url, "http://127.0.0.1:11434/v1");
+    }
 }
