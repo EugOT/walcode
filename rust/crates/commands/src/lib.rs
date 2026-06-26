@@ -527,7 +527,7 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "api-key",
         aliases: &[],
-        summary: "Show or set the Anthropic API key",
+        summary: "Disabled: direct provider API keys are not accepted",
         argument_hint: Some("[key]"),
         resume_supported: false,
     },
@@ -1407,7 +1407,7 @@ pub fn validate_slash_command_input(
         }
         "login" | "logout" => {
             return Err(command_error(
-                "This auth flow was removed. Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead.",
+                "This auth flow was removed. Use Claude Code CLI auth or an approved Claude agent runtime instead.",
                 command,
                 "",
             ));
@@ -5961,9 +5961,9 @@ mod tests {
     #[test]
     fn removed_login_and_logout_commands_report_env_auth_guidance() {
         let login_error = parse_error_message("/login");
-        assert!(login_error.contains("ANTHROPIC_API_KEY"));
+        assert!(login_error.contains("Claude Code CLI"));
         let logout_error = parse_error_message("/logout");
-        assert!(logout_error.contains("ANTHROPIC_AUTH_TOKEN"));
+        assert!(logout_error.contains("approved Claude agent runtime"));
     }
 
     #[test]
