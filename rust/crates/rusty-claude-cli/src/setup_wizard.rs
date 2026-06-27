@@ -3,36 +3,35 @@ use std::io::{self, IsTerminal, Write};
 use runtime::{save_user_provider_settings, ConfigLoader, RuntimeProviderConfig};
 
 const PROVIDERS: &[(&str, &str, &str)] = &[
-    ("1", "Anthropic", "anthropic"),
+    (
+        "1",
+        "Claude Code CLI / approved Claude runtime",
+        "claude-cli",
+    ),
     ("2", "xAI / Grok", "xai"),
-    ("3", "OpenAI", "openai"),
+    ("3", "Codex CLI / approved GPT runtime", "codex-cli"),
     ("4", "DashScope (Qwen/Kimi)", "dashscope"),
-    ("5", "Custom (OpenAI-compat)", "openai"),
+    ("5", "Custom local/private OpenAI-compat", "openai"),
 ];
 
 const PROVIDER_MODELS: &[(&str, &[&str])] = &[
-    ("anthropic", &["opus", "sonnet", "haiku"]),
+    ("claude-cli", &["opus", "sonnet", "haiku"]),
     ("xai", &["grok", "grok-mini", "grok-2"]),
-    ("openai", &["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]),
+    ("codex-cli", &["gpt-5.5", "gpt-5.2", "gpt-5.2-codex"]),
     ("dashscope", &["qwen-plus", "qwen-max", "kimi"]),
 ];
 
 const DEFAULT_BASE_URLS: &[(&str, &str)] = &[
-    ("anthropic", "https://api.anthropic.com"),
     ("xai", "https://api.x.ai/v1"),
-    ("openai", "https://api.openai.com/v1"),
+    ("openai", "http://127.0.0.1:11434/v1"),
     (
         "dashscope",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ),
 ];
 
-const API_KEY_ENV_VARS: &[(&str, &str)] = &[
-    ("anthropic", "ANTHROPIC_API_KEY"),
-    ("xai", "XAI_API_KEY"),
-    ("openai", "OPENAI_API_KEY"),
-    ("dashscope", "DASHSCOPE_API_KEY"),
-];
+const API_KEY_ENV_VARS: &[(&str, &str)] =
+    &[("xai", "XAI_API_KEY"), ("dashscope", "DASHSCOPE_API_KEY")];
 
 pub fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() {
@@ -171,9 +170,10 @@ fn prompt_base_url(
 
     // Check if the relevant env var is already set
     let env_var = match kind {
-        "anthropic" => "ANTHROPIC_BASE_URL",
+        "claude-cli" => "CLAUDE_CODE_REMOTE_BASE_URL",
         "xai" => "XAI_BASE_URL",
         "openai" => "OPENAI_BASE_URL",
+        "codex-cli" => "CODEX_HOME",
         "dashscope" => "DASHSCOPE_BASE_URL",
         _ => "BASE_URL",
     };
