@@ -3570,7 +3570,7 @@ fn config_parse_error_has_typed_error_kind_and_hint_764() {
 #[test]
 fn login_logout_removed_subcommands_have_error_kind_and_hint_765() {
     // #765: `claw login` and `claw logout` are removed; JSON envelope must carry
-    // error_kind:removed_subcommand + non-null hint pointing to the env var migration.
+    // error_kind:removed_subcommand + non-null hint pointing to the approved CLI auth path.
     // Before fix: single-line error string → error_kind:"unknown" + hint:null.
     let root = unique_temp_dir("login-logout-removed-765");
     fs::create_dir_all(&root).expect("temp dir should exist");
@@ -3599,8 +3599,8 @@ fn login_logout_removed_subcommands_have_error_kind_and_hint_765() {
             "claw {subcmd} must return non-null hint (#765), got: {hint:?}"
         );
         assert!(
-            hint.contains("ANTHROPIC_API_KEY") || hint.contains("ANTHROPIC_AUTH_TOKEN"),
-            "claw {subcmd} hint must mention the env var migration path, got: {hint:?}"
+            hint.contains("Claude Code CLI auth") || hint.contains("approved Claude agent runtime"),
+            "claw {subcmd} hint must mention the approved CLI auth path, got: {hint:?}"
         );
     }
 }

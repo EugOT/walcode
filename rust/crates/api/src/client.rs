@@ -23,15 +23,24 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        let _ = anthropic_auth;
-        if !providers::provider_allowed_by_runtime_policy(&resolved_model) {
+        let policy_allows = providers::provider_allowed_by_runtime_policy(&resolved_model);
+        if anthropic_auth.is_some() && !policy_allows {
             return Err(ApiError::Auth(format!(
                 "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
             )));
         }
         match providers::detect_provider_kind(&resolved_model) {
+            ProviderKind::Anthropic if policy_allows => {
+                let auth = match anthropic_auth {
+                    Some(auth) => auth,
+                    None => AuthSource::from_env_or_saved()?,
+                };
+                Ok(Self::Anthropic(
+                    AnthropicClient::from_auth(auth).with_base_url(anthropic::read_base_url()),
+                ))
+            }
             ProviderKind::Anthropic => Err(ApiError::Auth(
-                "direct Anthropic API runtime disabled by policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
+                "direct Anthropic API runtime disabled by runtime policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
             )),
             ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::xai(),
@@ -52,10 +61,12 @@ impl ProviderClient {
                         Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
                             OpenAiCompatConfig::dashscope()
                         }
-                        _ if openai_base_url_is_local() => OpenAiCompatConfig::openai(),
+                        _ if openai_base_url_is_local() && policy_allows => {
+                            OpenAiCompatConfig::openai()
+                        }
                         _ => {
                             return Err(ApiError::Auth(
-                                "direct OpenAI API runtime disabled by policy; use Codex CLI/app/ACP or a local/private compatible endpoint".to_string(),
+                                "direct OpenAI API runtime disabled by runtime policy; use Codex CLI/app/ACP or a local/private compatible endpoint".to_string(),
                             ));
                         }
                     };
@@ -346,12 +357,27 @@ mod tests {
     fn direct_anthropic_provider_is_disabled_by_policy() {
         let _lock = env_lock();
         let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
 
         let err = ProviderClient::from_model("anthropic/claude-sonnet-4-6")
             .expect_err("direct Anthropic provider should be disabled");
         assert!(err
             .to_string()
             .contains("direct Anthropic API runtime disabled"));
+    }
+
+    #[test]
+    fn local_anthropic_base_url_routes_mock_provider() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", Some("http://127.0.0.1:3456"));
+
+        let client = ProviderClient::from_model("anthropic/claude-sonnet-4-6")
+            .expect("loopback Anthropic-compatible mocks should be allowed");
+        match client {
+            ProviderClient::Anthropic(_) => {}
+            other => panic!("Expected ProviderClient::Anthropic for local mock, got: {other:?}"),
+        }
     }
 
     #[test]

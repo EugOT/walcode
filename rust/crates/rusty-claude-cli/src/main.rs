@@ -12611,30 +12611,18 @@ impl AnthropicRuntimeClient {
         // routing (`openai/`, `gpt-`, `grok`, `qwen/`) wins over
         // env-var presence.
         //
-        // For Anthropic we build the client directly instead of going
-        // through `ApiProviderClient::from_model_with_anthropic_auth`
-        // so we can explicitly apply `api::read_base_url()` — that
-        // reads `ANTHROPIC_BASE_URL` and is required for the local
-        // mock-server test harness
-        // (`crates/rusty-claude-cli/tests/compact_output.rs`) to point
-        // claw at its fake Anthropic endpoint. We also attach a
-        // session-scoped prompt cache on the Anthropic path; the
-        // prompt cache is Anthropic-only so non-Anthropic variants
-        // skip it.
+        // The shared API client enforces the runtime policy and still honors
+        // local loopback ANTHROPIC_BASE_URL mocks after the policy predicate
+        // has approved the route.
         let resolved_model = api::resolve_model_alias(&model);
         if !api::provider_allowed_by_runtime_policy(&resolved_model) {
             return Err(format!(
-                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude CLI, Codex CLI, Antigravity, or a local approved endpoint"
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
             )
             .into());
         }
         let client = match detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => {
-                return Err(Box::new(api::ApiError::Auth(
-                    "direct Anthropic API runtime disabled by policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
-                )));
-            }
-            ProviderKind::Xai | ProviderKind::OpenAi => {
+            ProviderKind::Anthropic | ProviderKind::Xai | ProviderKind::OpenAi => {
                 // The api crate's `ProviderClient::from_model_with_anthropic_auth`
                 // with `None` for the anthropic auth routes via
                 // `detect_provider_kind` and builds an
