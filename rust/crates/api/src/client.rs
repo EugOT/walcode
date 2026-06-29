@@ -23,16 +23,16 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
+        let _ = anthropic_auth;
         if !providers::provider_allowed_by_runtime_policy(&resolved_model) {
             return Err(ApiError::Auth(format!(
-                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude CLI, Codex CLI, Antigravity, or a local approved endpoint"
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
             )));
         }
         match providers::detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
-                Some(auth) => AnthropicClient::from_auth(auth),
-                None => AnthropicClient::from_env()?,
-            })),
+            ProviderKind::Anthropic => Err(ApiError::Auth(
+                "direct Anthropic API runtime disabled by policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
+            )),
             ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::xai(),
             )?)),
@@ -52,7 +52,12 @@ impl ProviderClient {
                         Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
                             OpenAiCompatConfig::dashscope()
                         }
-                        _ => OpenAiCompatConfig::openai(),
+                        _ if openai_base_url_is_local() => OpenAiCompatConfig::openai(),
+                        _ => {
+                            return Err(ApiError::Auth(
+                                "direct OpenAI API runtime disabled by policy; use Codex CLI/app/ACP or a local/private compatible endpoint".to_string(),
+                            ));
+                        }
                     };
                     Ok(Self::OpenAi(OpenAiCompatClient::from_env(config)?))
                 }
@@ -118,6 +123,26 @@ impl ProviderClient {
                 .map(MessageStream::OpenAiCompat),
         }
     }
+}
+
+fn openai_base_url_is_local() -> bool {
+    let Ok(raw) = std::env::var("OPENAI_BASE_URL") else {
+        return false;
+    };
+    let lower = raw.trim().to_ascii_lowercase();
+    lower.starts_with("http://127.")
+        || lower.starts_with("http://localhost")
+        || lower.starts_with("http://[::1]")
+        || lower.starts_with("http://0.0.0.0")
+        || lower.starts_with("http://10.")
+        || lower.starts_with("http://192.168.")
+        || lower.starts_with("http://172.16.")
+        || lower.starts_with("http://172.17.")
+        || lower.starts_with("http://172.18.")
+        || lower.starts_with("http://172.19.")
+        || lower.starts_with("http://172.2")
+        || lower.starts_with("http://172.30.")
+        || lower.starts_with("http://172.31.")
 }
 
 #[derive(Debug)]
@@ -315,5 +340,30 @@ mod tests {
             }
             other => panic!("Expected ProviderClient::OpenAi for local model, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn direct_anthropic_provider_is_disabled_by_policy() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+
+        let err = ProviderClient::from_model("anthropic/claude-sonnet-4-6")
+            .expect_err("direct Anthropic provider should be disabled");
+        assert!(err
+            .to_string()
+            .contains("direct Anthropic API runtime disabled"));
+    }
+
+    #[test]
+    fn default_openai_provider_is_disabled_by_policy() {
+        let _lock = env_lock();
+        let _base_url = EnvVarGuard::set("OPENAI_BASE_URL", None);
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openai-key"));
+
+        let err = ProviderClient::from_model("openai/gpt-4.1-mini")
+            .expect_err("default OpenAI provider should be disabled");
+        assert!(err
+            .to_string()
+            .contains("direct OpenAI API runtime disabled"));
     }
 }
