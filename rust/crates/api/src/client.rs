@@ -140,20 +140,17 @@ fn openai_base_url_is_local() -> bool {
     let Ok(raw) = std::env::var("OPENAI_BASE_URL") else {
         return false;
     };
-    let lower = raw.trim().to_ascii_lowercase();
-    lower.starts_with("http://127.")
-        || lower.starts_with("http://localhost")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("http://0.0.0.0")
-        || lower.starts_with("http://10.")
-        || lower.starts_with("http://192.168.")
-        || lower.starts_with("http://172.16.")
-        || lower.starts_with("http://172.17.")
-        || lower.starts_with("http://172.18.")
-        || lower.starts_with("http://172.19.")
-        || lower.starts_with("http://172.2")
-        || lower.starts_with("http://172.30.")
-        || lower.starts_with("http://172.31.")
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
 }
 
 #[derive(Debug)]
@@ -194,7 +191,7 @@ pub fn read_xai_base_url() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderClient;
+    use super::{openai_base_url_is_local, ProviderClient};
     use crate::providers::{detect_provider_kind, resolve_model_alias, ProviderKind};
 
     /// Serializes every test in this module that mutates process-wide
@@ -301,6 +298,24 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    #[test]
+    fn openai_base_url_local_check_rejects_loopback_lookalike_hosts() {
+        let _lock = env_lock();
+
+        let _lookalike =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("http://127.0.0.1.attacker.test/v1"));
+        assert!(!openai_base_url_is_local());
+
+        drop(_lookalike);
+        let _localhost =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("http://localhost.attacker.test/v1"));
+        assert!(!openai_base_url_is_local());
+
+        drop(_localhost);
+        let _loopback = EnvVarGuard::set("OPENAI_BASE_URL", Some("http://127.0.0.1:11434/v1"));
+        assert!(openai_base_url_is_local());
     }
 
     #[test]

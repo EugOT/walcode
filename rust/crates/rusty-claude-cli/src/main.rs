@@ -12635,7 +12635,8 @@ impl AnthropicRuntimeClient {
                 // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
                 ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
             }
-        };
+        }
+        .with_prompt_cache(api::PromptCache::new(session_id));
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
             client,
