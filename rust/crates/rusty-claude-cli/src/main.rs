@@ -35,11 +35,10 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use log::debug;
 
 use api::{
-    detect_provider_kind, model_family_identity_for, resolve_startup_auth_source, AnthropicClient,
-    AuthSource, ContentBlockDelta, InputContentBlock, InputMessage, MessageRequest,
-    MessageResponse, OutputContentBlock, PromptCache, ProviderClient as ApiProviderClient,
-    ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
-    ToolResultContentBlock,
+    detect_provider_kind, model_family_identity_for, AuthSource, ContentBlockDelta,
+    InputContentBlock, InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
+    ProviderClient as ApiProviderClient, ProviderKind, StreamEvent as ApiStreamEvent, ToolChoice,
+    ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -634,14 +633,12 @@ fn invalid_output_format_value(message: &str) -> Option<String> {
 /// message is self-explanatory or no canonical remediation exists.
 fn fallback_hint_for_error_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "api_auth_error" => {
-            Some("Check that ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set and valid.")
-        }
+        "api_auth_error" => Some("Check that the approved CLI/agent runtime is authenticated."),
         "api_rate_limit_error" => {
             Some("You have hit the API rate limit. Wait and retry, or reduce request frequency.")
         }
         "missing_credentials" => {
-            Some("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN before running claw.")
+            Some("Authenticate through Claude Code CLI or another approved agent runtime before running claw.")
         }
         "config_parse_error" => Some(
             "Fix the JSON syntax or schema in the referenced .claw/settings.json or .claw.json file, then rerun the command.",
@@ -2526,7 +2523,7 @@ fn compact_interactive_only_error() -> String {
 fn removed_auth_surface_error(command_name: &str) -> String {
     // #765: two-line format so split_error_hint() extracts hint into JSON envelope
     format!(
-        "`claw {command_name}` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
+        "`claw {command_name}` has been removed.\nUse Claude Code CLI auth (`claude auth status`) or an approved Claude agent runtime instead."
     )
 }
 
@@ -2957,7 +2954,7 @@ fn validate_model_syntax(model: &str) -> Result<(), String> {
         if trimmed.starts_with("gpt-") || trimmed.starts_with("gpt_") {
             err_msg.push_str("\nDid you mean `openai/");
             err_msg.push_str(trimmed);
-            err_msg.push_str("`? (Requires OPENAI_API_KEY env var)");
+            err_msg.push_str("`? Use Codex CLI/app/ACP for GPT-family models.");
         } else if trimmed.starts_with("qwen") && trimmed.contains(':') {
             err_msg.push_str("\nFor a local Ollama model, set `OPENAI_BASE_URL=http://127.0.0.1:11434/v1` before using tagged names like `");
             err_msg.push_str(trimmed);
@@ -3820,6 +3817,11 @@ fn run_mcp_serve() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn command_on_path(name: &str) -> bool {
+    env::var_os("PATH")
+        .is_some_and(|paths| env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+}
+
 #[allow(clippy::too_many_lines)]
 fn check_auth_health() -> DiagnosticCheck {
     let api_key_present = env::var("ANTHROPIC_API_KEY")
@@ -3831,10 +3833,14 @@ fn check_auth_health() -> DiagnosticCheck {
     let openai_key_present = env::var("OPENAI_API_KEY")
         .ok()
         .is_some_and(|value| !value.trim().is_empty());
-    let any_auth_present = api_key_present || auth_token_present || openai_key_present;
-    let prompt_ready = any_auth_present;
+    let direct_env_present = api_key_present || auth_token_present || openai_key_present;
+    let claude_cli_present = command_on_path("claude");
+    let codex_cli_present = command_on_path("codex");
+    let antigravity_present = command_on_path("agy") || command_on_path("antigravity");
+    let approved_runtime_present = claude_cli_present || codex_cli_present || antigravity_present;
+    let prompt_ready = approved_runtime_present;
     let env_details = format!(
-        "Environment       api_key={} auth_token={} openai_key={}",
+        "Environment       anthropic_api_key={} anthropic_auth_token={} openai_key={} (direct provider env ignored by policy)",
         if api_key_present { "present" } else { "absent" },
         if auth_token_present {
             "present"
@@ -3847,23 +3853,42 @@ fn check_auth_health() -> DiagnosticCheck {
             "absent"
         }
     );
+    let runtime_details = format!(
+        "Approved runtimes claude_cli={} codex_cli={} antigravity={}",
+        if claude_cli_present {
+            "present"
+        } else {
+            "absent"
+        },
+        if codex_cli_present {
+            "present"
+        } else {
+            "absent"
+        },
+        if antigravity_present {
+            "present"
+        } else {
+            "absent"
+        }
+    );
 
     match load_oauth_credentials() {
         Ok(Some(token_set)) => DiagnosticCheck::new(
             "Auth",
-            if any_auth_present {
+            if approved_runtime_present {
                 DiagnosticLevel::Ok
             } else {
                 DiagnosticLevel::Warn
             },
-            if any_auth_present {
-                "supported auth env vars are configured; legacy saved OAuth is ignored"
+            if approved_runtime_present {
+                "approved CLI/agent runtime is available; legacy saved OAuth and direct provider env are ignored"
             } else {
-                "legacy saved OAuth credentials are present but unsupported"
+                "legacy saved OAuth credentials are present but unsupported; no approved CLI/agent runtime found"
             },
         )
         .with_details(vec![
             env_details,
+            runtime_details,
             format!(
                 "Legacy OAuth      expires_at={} refresh_token={} scopes={}",
                 token_set
@@ -3880,16 +3905,20 @@ fn check_auth_health() -> DiagnosticCheck {
                     token_set.scopes.join(",")
                 }
             ),
-            "Suggested action  set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN; `claw login` is removed"
+            "Suggested action  use Claude Code CLI, Codex CLI/app/ACP, or Antigravity; `claw login` is removed"
                 .to_string(),
         ])
-        .with_hint("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN env var. The saved OAuth token is no longer accepted.")
+        .with_hint("Authenticate through an approved CLI/agent runtime. Direct provider API credentials are ignored.")
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
             ("openai_key_present".to_string(), json!(openai_key_present)),
+            ("direct_env_present".to_string(), json!(direct_env_present)),
+            ("claude_cli_present".to_string(), json!(claude_cli_present)),
+            ("codex_cli_present".to_string(), json!(codex_cli_present)),
+            ("antigravity_present".to_string(), json!(antigravity_present)),
             ("prompt_ready".to_string(), json!(prompt_ready)),
-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("approved_runtime_missing") }),
 
             ("legacy_saved_oauth_present".to_string(), json!(true)),
             (
@@ -3904,25 +3933,29 @@ fn check_auth_health() -> DiagnosticCheck {
         ])),
         Ok(None) => DiagnosticCheck::new(
             "Auth",
-            if any_auth_present {
+            if approved_runtime_present {
                 DiagnosticLevel::Ok
             } else {
                 DiagnosticLevel::Warn
             },
-            if any_auth_present {
-                "supported auth env vars are configured"
+            if approved_runtime_present {
+                "approved CLI/agent runtime is available"
             } else {
-                "no supported auth env vars were found"
+                "no approved CLI/agent runtime was found"
             },
         )
-        .with_details(vec![env_details])
-        .with_hint(if !any_auth_present { "Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN to authenticate." } else { "" })
+        .with_details(vec![env_details, runtime_details])
+        .with_hint(if !approved_runtime_present { "Install/authenticate Claude Code CLI, Codex CLI/app/ACP, or Antigravity." } else { "" })
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
             ("openai_key_present".to_string(), json!(openai_key_present)),
+            ("direct_env_present".to_string(), json!(direct_env_present)),
+            ("claude_cli_present".to_string(), json!(claude_cli_present)),
+            ("codex_cli_present".to_string(), json!(codex_cli_present)),
+            ("antigravity_present".to_string(), json!(antigravity_present)),
             ("prompt_ready".to_string(), json!(prompt_ready)),
-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("approved_runtime_missing") }),
             ("legacy_saved_oauth_present".to_string(), json!(false)),
             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
             ("legacy_refresh_token_present".to_string(), json!(false)),
@@ -3933,13 +3966,17 @@ fn check_auth_health() -> DiagnosticCheck {
             DiagnosticLevel::Fail,
             format!("failed to inspect legacy saved credentials: {error}"),
         )
-        .with_hint("Set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN env var to authenticate.")
+        .with_hint("Authenticate through an approved CLI/agent runtime. Direct provider API credentials are ignored.")
         .with_data(Map::from_iter([
             ("api_key_present".to_string(), json!(api_key_present)),
             ("auth_token_present".to_string(), json!(auth_token_present)),
             ("openai_key_present".to_string(), json!(openai_key_present)),
+            ("direct_env_present".to_string(), json!(direct_env_present)),
+            ("claude_cli_present".to_string(), json!(claude_cli_present)),
+            ("codex_cli_present".to_string(), json!(codex_cli_present)),
+            ("antigravity_present".to_string(), json!(antigravity_present)),
             ("prompt_ready".to_string(), json!(prompt_ready)),
-            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("auth_missing") }),
+            ("prompt_blocked_reason".to_string(), if prompt_ready { Value::Null } else { json!("approved_runtime_missing") }),
             ("legacy_saved_oauth_present".to_string(), Value::Null),
             ("legacy_saved_oauth_expires_at".to_string(), Value::Null),
             ("legacy_refresh_token_present".to_string(), Value::Null),
@@ -3952,8 +3989,6 @@ fn check_auth_health() -> DiagnosticCheck {
 /// #466: validate provider BASE_URL env vars
 fn check_base_url_health() -> DiagnosticCheck {
     let base_url_vars = [
-        ("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-        ("OPENAI_BASE_URL", "https://api.openai.com"),
         ("XAI_BASE_URL", "https://api.x.ai"),
         ("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com"),
     ];
@@ -12576,26 +12611,18 @@ impl AnthropicRuntimeClient {
         // routing (`openai/`, `gpt-`, `grok`, `qwen/`) wins over
         // env-var presence.
         //
-        // For Anthropic we build the client directly instead of going
-        // through `ApiProviderClient::from_model_with_anthropic_auth`
-        // so we can explicitly apply `api::read_base_url()` — that
-        // reads `ANTHROPIC_BASE_URL` and is required for the local
-        // mock-server test harness
-        // (`crates/rusty-claude-cli/tests/compact_output.rs`) to point
-        // claw at its fake Anthropic endpoint. We also attach a
-        // session-scoped prompt cache on the Anthropic path; the
-        // prompt cache is Anthropic-only so non-Anthropic variants
-        // skip it.
+        // The shared API client enforces the runtime policy and still honors
+        // local loopback ANTHROPIC_BASE_URL mocks after the policy predicate
+        // has approved the route.
         let resolved_model = api::resolve_model_alias(&model);
+        if !api::provider_allowed_by_runtime_policy(&resolved_model) {
+            return Err(format!(
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
+            )
+            .into());
+        }
         let client = match detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => {
-                let auth = resolve_cli_auth_source()?;
-                let inner = AnthropicClient::from_auth(auth)
-                    .with_base_url(api::read_base_url())
-                    .with_prompt_cache(PromptCache::new(session_id));
-                ApiProviderClient::Anthropic(inner)
-            }
-            ProviderKind::Xai | ProviderKind::OpenAi => {
+            ProviderKind::Anthropic | ProviderKind::Xai | ProviderKind::OpenAi => {
                 // The api crate's `ProviderClient::from_model_with_anthropic_auth`
                 // with `None` for the anthropic auth routes via
                 // `detect_provider_kind` and builds an
@@ -12608,7 +12635,8 @@ impl AnthropicRuntimeClient {
                 // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
                 ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
             }
-        };
+        }
+        .with_prompt_cache(api::PromptCache::new(session_id));
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
             client,
@@ -12634,7 +12662,9 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
 
 #[allow(clippy::result_large_err)]
 fn resolve_cli_auth_source_for_cwd() -> Result<AuthSource, api::ApiError> {
-    resolve_startup_auth_source(|| Ok(None))
+    Err(api::ApiError::Auth(
+        "direct Anthropic API credentials disabled by policy; use Claude Code CLI auth".to_string(),
+    ))
 }
 
 impl ApiClient for AnthropicRuntimeClient {
@@ -14325,6 +14355,28 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tools::GlobalToolRegistry;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn registry_with_plugin_tool() -> GlobalToolRegistry {
         GlobalToolRegistry::with_plugin_tools(vec![PluginTool::new(
             "plugin-demo@external",
@@ -14788,7 +14840,7 @@ mod tests {
         }
         std::fs::remove_dir_all(config_home).expect("temp config home should clean up");
 
-        assert!(error.to_string().contains("ANTHROPIC_API_KEY"));
+        assert!(error.to_string().contains("Claude Code CLI auth"));
     }
 
     #[test]
@@ -15324,9 +15376,9 @@ mod tests {
     #[test]
     fn removed_login_and_logout_subcommands_error_helpfully() {
         let login = parse_args(&["login".to_string()]).expect_err("login should be removed");
-        assert!(login.contains("ANTHROPIC_API_KEY"));
+        assert!(login.contains("Claude Code CLI"));
         let logout = parse_args(&["logout".to_string()]).expect_err("logout should be removed");
-        assert!(logout.contains("ANTHROPIC_AUTH_TOKEN"));
+        assert!(logout.contains("approved Claude agent runtime"));
         assert_eq!(
             parse_args(&["doctor".to_string()]).expect("doctor should parse"),
             CliAction::Doctor {
@@ -16445,7 +16497,7 @@ mod tests {
         // #765: removed auth subcommands must classify as removed_subcommand
         assert_eq!(
             classify_error_kind(
-                "`claw login` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
+                "`claw login` has been removed.\nUse Claude Code CLI auth (`claude auth status`) or an approved Claude agent runtime instead."
             ),
             "removed_subcommand"
         );
@@ -16458,7 +16510,7 @@ mod tests {
         );
         assert_eq!(
             classify_error_kind(
-                "`claw logout` has been removed.\nSet ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN instead."
+                "`claw logout` has been removed.\nUse Claude Code CLI auth (`claude auth status`) or an approved Claude agent runtime instead."
             ),
             "removed_subcommand"
         );
@@ -17376,8 +17428,10 @@ mod tests {
     #[test]
     fn startup_banner_mentions_workflow_completions() {
         let _guard = env_lock();
-        // Inject dummy credentials so LiveCli can construct without real Anthropic key
-        std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
+        // Use a loopback endpoint so startup-only construction does not enable
+        // direct provider API access.
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
+        let _base_url = EnvVarGuard::set("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
 
@@ -17396,7 +17450,6 @@ mod tests {
         assert!(banner.contains("workflow completions"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
-        std::env::remove_var("ANTHROPIC_API_KEY");
     }
 
     #[test]
@@ -19382,9 +19435,11 @@ UU conflicted.rs",
         // set/remove ANTHROPIC_API_KEY do not race with this test.
         let _guard = env_lock();
         let config_home = temp_dir();
-        // Inject a dummy API key so runtime construction succeeds without real credentials.
-        // This test only exercises plugin lifecycle (init/shutdown), never calls the API.
-        std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-plugin-lifecycle");
+        // Use a loopback endpoint so runtime construction succeeds without
+        // enabling direct provider API access. This test only exercises
+        // plugin lifecycle (init/shutdown), never calls the API.
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-dummy-key-for-plugin-lifecycle");
+        let _base_url = EnvVarGuard::set("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
         let workspace = temp_dir();
         let source_root = temp_dir();
         fs::create_dir_all(&config_home).expect("config home");

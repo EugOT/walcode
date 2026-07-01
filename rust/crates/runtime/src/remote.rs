@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_REMOTE_BASE_URL: &str = "https://api.anthropic.com";
+pub const DEFAULT_REMOTE_BASE_URL: &str = "";
 pub const DEFAULT_SESSION_TOKEN_PATH: &str = "/run/ccr/session_token";
 pub const DEFAULT_SYSTEM_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 
@@ -78,7 +78,7 @@ impl RemoteSessionContext {
                 .filter(|value| !value.is_empty())
                 .cloned(),
             base_url: env_map
-                .get("ANTHROPIC_BASE_URL")
+                .get("CLAUDE_CODE_REMOTE_BASE_URL")
                 .filter(|value| !value.is_empty())
                 .cloned()
                 .unwrap_or_else(|| DEFAULT_REMOTE_BASE_URL.to_string()),
@@ -278,7 +278,7 @@ mod tests {
                 "session-123".to_string(),
             ),
             (
-                "ANTHROPIC_BASE_URL".to_string(),
+                "CLAUDE_CODE_REMOTE_BASE_URL".to_string(),
                 "https://remote.test".to_string(),
             ),
         ]);
@@ -314,7 +314,7 @@ mod tests {
                 "session-123".to_string(),
             ),
             (
-                "ANTHROPIC_BASE_URL".to_string(),
+                "CLAUDE_CODE_REMOTE_BASE_URL".to_string(),
                 "https://remote.test".to_string(),
             ),
             (
