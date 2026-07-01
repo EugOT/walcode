@@ -395,24 +395,39 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
 }
 
 fn is_local_runtime_policy_base_url(base_url: &str) -> bool {
-    let lower = base_url.trim().to_ascii_lowercase();
-    lower.starts_with("http://127.0.0.1")
-        || lower.starts_with("http://localhost")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("http://0.0.0.0")
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
 }
 
 fn is_forbidden_runtime_policy_base_url(base_url: &str) -> bool {
-    let lower = base_url.trim().to_ascii_lowercase();
-    [
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    const FORBIDDEN_HOSTS: &[&str] = &[
         "api.openai.com",
         "api.anthropic.com",
         "generativelanguage.googleapis.com",
         "aiplatform.googleapis.com",
         "openrouter.ai",
-    ]
-    .iter()
-    .any(|host| lower.contains(host))
+    ];
+    FORBIDDEN_HOSTS.iter().any(|forbidden| {
+        host.eq_ignore_ascii_case(forbidden)
+            || host
+                .to_ascii_lowercase()
+                .ends_with(&format!(".{forbidden}"))
+    })
 }
 
 #[must_use]
@@ -997,6 +1012,30 @@ mod tests {
             EnvVarGuard::set("OPENAI_BASE_URL", Some("https://openrouter.ai/api/v1"));
         let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
 
+        assert!(!provider_allowed_by_runtime_policy("local/qwen2.5-coder"));
+    }
+
+    #[test]
+    fn runtime_policy_rejects_loopback_lookalike_hosts() {
+        let _lock = env_lock();
+        let _anthropic_base = EnvVarGuard::set(
+            "ANTHROPIC_BASE_URL",
+            Some("http://localhost.attacker.test:3456"),
+        );
+        assert!(!provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+
+        let _anthropic_base = EnvVarGuard::set(
+            "ANTHROPIC_BASE_URL",
+            Some("http://127.0.0.1.attacker.test:3456"),
+        );
+        assert!(!provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("local-placeholder"));
+        let _openai_base = EnvVarGuard::set(
+            "OPENAI_BASE_URL",
+            Some("http://api.openai.com.evil.test/v1"),
+        );
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
         assert!(!provider_allowed_by_runtime_policy("local/qwen2.5-coder"));
     }
 
