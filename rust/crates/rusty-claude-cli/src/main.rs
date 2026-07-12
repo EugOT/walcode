@@ -5310,7 +5310,11 @@ impl HookValidationSummary {
     fn from_config(config: &runtime::RuntimeConfig) -> Self {
         let hooks = config.hooks();
         Self {
-            valid_count: hooks.pre_tool_use_entries().len()
+            valid_count: hooks.session_start_entries().len()
+                + hooks.user_prompt_submit_entries().len()
+                + hooks.tool_activity_entries().len()
+                + hooks.stop_entries().len()
+                + hooks.pre_tool_use_entries().len()
                 + hooks.post_tool_use_entries().len()
                 + hooks.post_tool_use_failure_entries().len(),
             invalid_hooks: hooks.invalid_hooks().to_vec(),
@@ -7672,6 +7676,7 @@ impl LiveCli {
             permission_mode,
             None,
         )?;
+        runtime.emit_session_start(&session.id);
         let cli = Self {
             model,
             allowed_tools,

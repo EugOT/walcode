@@ -20,6 +20,10 @@ pub type HookPermissionDecision = PermissionOverride;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
+    SessionStart,
+    UserPromptSubmit,
+    ToolActivity,
+    Stop,
     PreToolUse,
     PostToolUse,
     PostToolUseFailure,
@@ -29,6 +33,10 @@ impl HookEvent {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::SessionStart => "SessionStart",
+            Self::UserPromptSubmit => "UserPromptSubmit",
+            Self::ToolActivity => "ToolActivity",
+            Self::Stop => "Stop",
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::PostToolUseFailure => "PostToolUseFailure",
@@ -165,6 +173,72 @@ impl HookRunner {
     #[must_use]
     pub fn from_feature_config(feature_config: &RuntimeFeatureConfig) -> Self {
         Self::new(feature_config.hooks().clone())
+    }
+
+    /// Emit a metadata-only session lifecycle event.
+    ///
+    /// Unlike the compatibility tool hooks, lifecycle hooks never receive prompt,
+    /// tool input, tool output, errors, credentials, or other user content.
+    #[must_use]
+    pub fn run_session_start(&self, session_id: &str) -> HookRunResult {
+        self.run_metadata_commands(
+            HookEvent::SessionStart,
+            self.config.session_start_entries(),
+            "session",
+            json!({
+                "agent": "claw",
+                "hook_event_name": HookEvent::SessionStart.as_str(),
+                "session_id": session_id,
+            }),
+        )
+    }
+
+    /// Emit prompt submission metadata without exposing the submitted text.
+    #[must_use]
+    pub fn run_user_prompt_submit(&self, prompt_length: usize) -> HookRunResult {
+        self.run_metadata_commands(
+            HookEvent::UserPromptSubmit,
+            self.config.user_prompt_submit_entries(),
+            "prompt",
+            json!({
+                "agent": "claw",
+                "hook_event_name": HookEvent::UserPromptSubmit.as_str(),
+                "prompt_length": prompt_length,
+            }),
+        )
+    }
+
+    /// Emit completion metadata without exposing the response or error.
+    #[must_use]
+    pub fn run_stop(&self, failed: bool) -> HookRunResult {
+        self.run_metadata_commands(
+            HookEvent::Stop,
+            self.config.stop_entries(),
+            "session",
+            json!({
+                "agent": "claw",
+                "failed": failed,
+                "hook_event_name": HookEvent::Stop.as_str(),
+            }),
+        )
+    }
+
+    /// Emit tool lifecycle metadata through a separate privacy-safe adapter.
+    /// Existing Pre/PostToolUse hooks retain their compatibility payloads.
+    #[must_use]
+    pub fn run_tool_activity(&self, tool_name: &str, phase: &str, is_error: bool) -> HookRunResult {
+        self.run_metadata_commands(
+            HookEvent::ToolActivity,
+            self.config.tool_activity_entries(),
+            tool_name,
+            json!({
+                "agent": "claw",
+                "hook_event_name": HookEvent::ToolActivity.as_str(),
+                "tool_name": tool_name,
+                "tool_phase": phase,
+                "tool_result_is_error": is_error,
+            }),
+        )
     }
 
     #[must_use]
@@ -307,6 +381,97 @@ impl HookRunner {
             abort_signal,
             None,
         )
+    }
+
+    fn run_metadata_commands(
+        &self,
+        event: HookEvent,
+        commands: &[RuntimeHookCommand],
+        subject: &str,
+        payload: Value,
+    ) -> HookRunResult {
+        let mut result = HookRunResult::allow(Vec::new());
+        let payload = payload.to_string();
+
+        for command in commands
+            .iter()
+            .filter(|command| command.matches_tool(subject))
+        {
+            let command_text = command.command();
+            match Self::run_metadata_command(command_text, event, subject, &payload) {
+                HookCommandOutcome::Allow { parsed } => {
+                    merge_parsed_hook_output(&mut result, parsed);
+                }
+                HookCommandOutcome::Deny { parsed } => {
+                    merge_parsed_hook_output(&mut result, parsed);
+                    result.denied = true;
+                    return result;
+                }
+                HookCommandOutcome::Failed { parsed } => {
+                    merge_parsed_hook_output(&mut result, parsed);
+                    result.failed = true;
+                    return result;
+                }
+                HookCommandOutcome::Cancelled { message } => {
+                    result.cancelled = true;
+                    result.messages.push(message);
+                    return result;
+                }
+            }
+        }
+
+        result
+    }
+
+    fn run_metadata_command(
+        command: &str,
+        event: HookEvent,
+        subject: &str,
+        payload: &str,
+    ) -> HookCommandOutcome {
+        let mut child = shell_command(command);
+        child.stdin(Stdio::piped());
+        child.stdout(Stdio::piped());
+        child.stderr(Stdio::piped());
+        child.env("HOOK_EVENT", event.as_str());
+
+        match child.output_with_stdin(payload.as_bytes(), None) {
+            Ok(CommandExecution::Finished(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let parsed = parse_hook_output(event, subject, command, &stdout, &stderr);
+                let primary_message = parsed.primary_message().map(ToOwned::to_owned);
+                match output.status.code() {
+                    Some(0) => HookCommandOutcome::Allow { parsed },
+                    Some(code) => HookCommandOutcome::Failed {
+                        parsed: parsed.with_fallback_message(format_hook_failure(
+                            command,
+                            code,
+                            primary_message.as_deref(),
+                            stderr.as_str(),
+                        )),
+                    },
+                    None => HookCommandOutcome::Failed {
+                        parsed: parsed.with_fallback_message(format!(
+                            "{} hook `{command}` terminated by signal",
+                            event.as_str()
+                        )),
+                    },
+                }
+            }
+            Ok(CommandExecution::Cancelled) => HookCommandOutcome::Cancelled {
+                message: format!("{} hook `{command}` cancelled", event.as_str()),
+            },
+            Err(error) => HookCommandOutcome::Failed {
+                parsed: ParsedHookOutput {
+                    messages: vec![format!(
+                        "{} hook `{command}` failed to start: {error}",
+                        event.as_str()
+                    )],
+                    ..ParsedHookOutput::default()
+                },
+            },
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -641,6 +806,10 @@ fn hook_payload(
     is_error: bool,
 ) -> Value {
     match event {
+        HookEvent::SessionStart
+        | HookEvent::UserPromptSubmit
+        | HookEvent::ToolActivity
+        | HookEvent::Stop => unreachable!("metadata hooks use their privacy-safe payload builder"),
         HookEvent::PostToolUseFailure => json!({
             "hook_event_name": event.as_str(),
             "tool_name": tool_name,
@@ -822,6 +991,7 @@ enum CommandExecution {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::thread;
     use std::time::Duration;
 
@@ -834,6 +1004,80 @@ mod tests {
 
     struct RecordingReporter {
         events: Vec<HookProgressEvent>,
+    }
+
+    #[test]
+    fn lifecycle_hooks_emit_only_allowlisted_activity_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("claw-lifecycle-hooks-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("create lifecycle hook fixture dir");
+        let capture = |name: &str| {
+            let path = root.join(name);
+            shell_snippet(&format!(
+                "IFS= read -r payload || true; printf '%s' \"$payload\" > '{}'",
+                path.display()
+            ))
+        };
+        let runner = HookRunner::new(RuntimeHookConfig::default().with_lifecycle_hooks(
+            vec![capture("start.json")],
+            vec![capture("prompt.json")],
+            vec![capture("tool.json")],
+            vec![capture("stop.json")],
+        ));
+
+        let _ = runner.run_session_start("session-123");
+        let _ = runner.run_user_prompt_submit("secret prompt".chars().count());
+        let _ = runner.run_tool_activity("bash", "completed", true);
+        let _ = runner.run_stop(false);
+
+        let cases = [
+            (
+                "start.json",
+                &["agent", "hook_event_name", "session_id"][..],
+            ),
+            (
+                "prompt.json",
+                &["agent", "hook_event_name", "prompt_length"][..],
+            ),
+            (
+                "tool.json",
+                &[
+                    "agent",
+                    "hook_event_name",
+                    "tool_name",
+                    "tool_phase",
+                    "tool_result_is_error",
+                ][..],
+            ),
+            ("stop.json", &["agent", "failed", "hook_event_name"][..]),
+        ];
+        for (name, expected_keys) in cases {
+            let raw = fs::read_to_string(root.join(name)).expect("captured payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(&raw).expect("payload should be JSON");
+            let keys = payload
+                .as_object()
+                .expect("payload should be an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(keys, expected_keys);
+            for forbidden in [
+                "secret prompt",
+                "tool_input",
+                "tool_output",
+                "tool_error",
+                "api_key",
+                "credential",
+            ] {
+                assert!(
+                    !raw.contains(forbidden),
+                    "payload leaked {forbidden}: {raw}"
+                );
+            }
+        }
+
+        fs::remove_dir_all(root).expect("remove lifecycle hook fixture dir");
     }
 
     impl HookProgressReporter for RecordingReporter {
