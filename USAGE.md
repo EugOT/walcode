@@ -597,7 +597,7 @@ The list is also the precedence chain: project-local settings override project s
 
 ## Hook configuration
 
-`hooks.PreToolUse`, `hooks.PostToolUse`, and `hooks.PostToolUseFailure` accept either legacy command strings or object-style entries with a `matcher` and nested command hooks:
+`hooks.SessionStart`, `hooks.UserPromptSubmit`, `hooks.ToolActivity`, `hooks.Stop`, `hooks.PreToolUse`, `hooks.PostToolUse`, and `hooks.PostToolUseFailure` accept either legacy command strings or object-style entries with a `matcher` and nested command hooks. The lifecycle events emit metadata-only payloads; `ToolActivity` is the safe observability adapter for tool name, phase, and error state. Compatibility tool hooks retain their existing content-bearing payloads:
 
 ```json
 {
@@ -616,7 +616,7 @@ The list is also the precedence chain: project-local settings override project s
 ```
 
 Object-style matchers are optional. When present, they match tool names case-insensitively and support `*` wildcards plus comma or pipe separated alternatives. Nested hook `type` may be omitted or set to `"command"`; each nested command runs in configuration order.
-Legacy bare-string hook entries still load for backward compatibility but emit deprecation warnings suggesting migration to object-style entries. Unknown hook event names (e.g. `Stop`, `Notification`) are recorded as invalid without rejecting valid hooks. `status --output-format json` mirrors partial hook validation under `hook_validation` with `valid_count`, `invalid_count`, and `invalid_hooks:[{event, index, hook_index, kind, error_field, reason, valid:false}]`. `doctor --output-format json` includes a `hook validation` check so automation can repair every rejected hook entry without losing usable hooks.
+Legacy bare-string hook entries still load for backward compatibility but emit deprecation warnings suggesting migration to object-style entries. Unknown hook event names (e.g. `SessionEnd`, `Notification`) are recorded as invalid without rejecting valid hooks. `status --output-format json` mirrors partial hook validation under `hook_validation` with `valid_count`, `invalid_count`, and `invalid_hooks:[{event, index, hook_index, kind, error_field, reason, valid:false}]`. `doctor --output-format json` includes a `hook validation` check so automation can repair every rejected hook entry without losing usable hooks.
 
 ## Project instruction rules
 

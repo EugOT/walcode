@@ -237,6 +237,10 @@ pub struct ProviderFallbackConfig {
 /// Hook command lists grouped by lifecycle stage.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeHookConfig {
+    session_start: Vec<RuntimeHookCommand>,
+    user_prompt_submit: Vec<RuntimeHookCommand>,
+    tool_activity: Vec<RuntimeHookCommand>,
+    stop: Vec<RuntimeHookCommand>,
     pre_tool_use: Vec<RuntimeHookCommand>,
     post_tool_use: Vec<RuntimeHookCommand>,
     post_tool_use_failure: Vec<RuntimeHookCommand>,
@@ -1250,6 +1254,35 @@ impl RuntimeHookCommand {
 
 impl RuntimeHookConfig {
     #[must_use]
+    pub fn with_lifecycle_hooks(
+        mut self,
+        session_start: Vec<String>,
+        user_prompt_submit: Vec<String>,
+        tool_activity: Vec<String>,
+        stop: Vec<String>,
+    ) -> Self {
+        self.session_start = session_start
+            .into_iter()
+            .map(RuntimeHookCommand::new)
+            .collect();
+        self.user_prompt_submit = user_prompt_submit
+            .into_iter()
+            .map(RuntimeHookCommand::new)
+            .collect();
+        self.tool_activity = tool_activity
+            .into_iter()
+            .map(RuntimeHookCommand::new)
+            .collect();
+        self.stop = stop.into_iter().map(RuntimeHookCommand::new).collect();
+        self
+    }
+
+    #[must_use]
+    pub fn session_start(&self) -> Vec<String> {
+        hook_commands(&self.session_start)
+    }
+
+    #[must_use]
     pub fn new(
         pre_tool_use: Vec<String>,
         post_tool_use: Vec<String>,
@@ -1278,11 +1311,50 @@ impl RuntimeHookConfig {
         post_tool_use_failure: Vec<RuntimeHookCommand>,
     ) -> Self {
         Self {
+            session_start: Vec::new(),
+            user_prompt_submit: Vec::new(),
+            tool_activity: Vec::new(),
+            stop: Vec::new(),
             pre_tool_use,
             post_tool_use,
             post_tool_use_failure,
             invalid_hooks: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn session_start_entries(&self) -> &[RuntimeHookCommand] {
+        &self.session_start
+    }
+
+    #[must_use]
+    pub fn user_prompt_submit_entries(&self) -> &[RuntimeHookCommand] {
+        &self.user_prompt_submit
+    }
+
+    #[must_use]
+    pub fn user_prompt_submit(&self) -> Vec<String> {
+        hook_commands(&self.user_prompt_submit)
+    }
+
+    #[must_use]
+    pub fn tool_activity_entries(&self) -> &[RuntimeHookCommand] {
+        &self.tool_activity
+    }
+
+    #[must_use]
+    pub fn tool_activity(&self) -> Vec<String> {
+        hook_commands(&self.tool_activity)
+    }
+
+    #[must_use]
+    pub fn stop_entries(&self) -> &[RuntimeHookCommand] {
+        &self.stop
+    }
+
+    #[must_use]
+    pub fn stop(&self) -> Vec<String> {
+        hook_commands(&self.stop)
     }
 
     #[must_use]
@@ -1313,6 +1385,13 @@ impl RuntimeHookConfig {
     }
 
     pub fn extend(&mut self, other: &Self) {
+        extend_unique_hook_commands(&mut self.session_start, other.session_start_entries());
+        extend_unique_hook_commands(
+            &mut self.user_prompt_submit,
+            other.user_prompt_submit_entries(),
+        );
+        extend_unique_hook_commands(&mut self.tool_activity, other.tool_activity_entries());
+        extend_unique_hook_commands(&mut self.stop, other.stop_entries());
         extend_unique_hook_commands(&mut self.pre_tool_use, other.pre_tool_use_entries());
         extend_unique_hook_commands(&mut self.post_tool_use, other.post_tool_use_entries());
         extend_unique_hook_commands(
@@ -1750,6 +1829,30 @@ fn parse_hooks_object_partial(
     parse_hook_event_partial(
         &mut config,
         hooks,
+        "SessionStart",
+        context,
+        |config, command| config.session_start.push(command),
+    );
+    parse_hook_event_partial(
+        &mut config,
+        hooks,
+        "UserPromptSubmit",
+        context,
+        |config, command| config.user_prompt_submit.push(command),
+    );
+    parse_hook_event_partial(
+        &mut config,
+        hooks,
+        "ToolActivity",
+        context,
+        |config, command| config.tool_activity.push(command),
+    );
+    parse_hook_event_partial(&mut config, hooks, "Stop", context, |config, command| {
+        config.stop.push(command);
+    });
+    parse_hook_event_partial(
+        &mut config,
+        hooks,
         "PreToolUse",
         context,
         |config, command| {
@@ -1788,7 +1891,16 @@ fn parse_hooks_object_partial(
 }
 
 fn is_supported_hook_event(event: &str) -> bool {
-    matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure")
+    matches!(
+        event,
+        "SessionStart"
+            | "UserPromptSubmit"
+            | "ToolActivity"
+            | "Stop"
+            | "PreToolUse"
+            | "PostToolUse"
+            | "PostToolUseFailure"
+    )
 }
 
 fn parse_hook_event_partial(
@@ -2750,6 +2862,35 @@ mod tests {
         assert!(entries[1].matches_tool("bash"));
         assert!(!entries[1].matches_tool("Read"));
         assert!(entries[3].matches_tool("ReadFile"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_lifecycle_hooks_without_replacing_compatibility_tool_hooks() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            home.join("settings.json"),
+            r#"{"hooks":{"SessionStart":["start"],"UserPromptSubmit":["prompt"],"ToolActivity":[{"matcher":"Bash","hooks":[{"command":"activity"}]}],"Stop":["stop"],"PreToolUse":["existing-pre"],"PostToolUse":["existing-post"]}}"#,
+        )
+        .expect("write settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        assert_eq!(loaded.hooks().session_start(), ["start"]);
+        assert_eq!(loaded.hooks().user_prompt_submit(), ["prompt"]);
+        assert_eq!(loaded.hooks().tool_activity(), ["activity"]);
+        assert!(loaded.hooks().tool_activity_entries()[0].matches_tool("bash"));
+        assert_eq!(loaded.hooks().stop(), ["stop"]);
+        assert_eq!(loaded.hooks().pre_tool_use(), ["existing-pre"]);
+        assert_eq!(loaded.hooks().post_tool_use(), ["existing-post"]);
+        assert_eq!(loaded.hooks().invalid_count(), 0);
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
@@ -3785,7 +3926,7 @@ mod tests {
 
     #[test]
     fn unknown_hook_events_recorded_with_correct_kind_441() {
-        // ROADMAP #441 finding (a): unknown event names like Stop/Notification
+        // ROADMAP #441 finding (a): unknown event names like SessionEnd/Notification
         // should not reject entire hooks config; they are recorded as invalid.
         let root = temp_dir();
         let cwd = root.join("project");
@@ -3794,7 +3935,7 @@ mod tests {
         fs::create_dir_all(&cwd).expect("project dir");
         fs::write(
             home.join("settings.json"),
-            r#"{"hooks":{"PreToolUse":["valid-cmd"],"Stop":"not-an-array","Notification":[{}]}}"#,
+            r#"{"hooks":{"PreToolUse":["valid-cmd"],"SessionEnd":"not-an-array","Notification":[{}]}}"#,
         )
         .expect("write settings");
 
@@ -3804,7 +3945,7 @@ mod tests {
 
         // Valid PreToolUse hook should load
         assert_eq!(loaded.hooks().pre_tool_use(), &["valid-cmd".to_string()]);
-        // Stop and Notification are unknown events; each gets one invalid entry
+        // SessionEnd and Notification are unknown events; each gets one invalid entry
         // Notification:[{}] also has an empty-object entry issue but since we
         // don't parse unknown events, only the unknown-event invalid is recorded
         let invalid = loaded.hooks().invalid_hooks();
@@ -3814,13 +3955,13 @@ mod tests {
             invalid.len()
         );
 
-        let stop = invalid
+        let session_end = invalid
             .iter()
-            .find(|h| h.event == "Stop")
-            .expect("Stop invalid hook");
-        assert_eq!(stop.kind, "unknown_hook_event");
-        assert_eq!(stop.index, None);
-        assert!(stop.reason.contains("unknown hook event Stop"));
+            .find(|h| h.event == "SessionEnd")
+            .expect("SessionEnd invalid hook");
+        assert_eq!(session_end.kind, "unknown_hook_event");
+        assert_eq!(session_end.index, None);
+        assert!(session_end.reason.contains("unknown hook event SessionEnd"));
 
         let notif = invalid
             .iter()

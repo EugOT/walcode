@@ -224,6 +224,22 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
 
 const HOOKS_FIELDS: &[FieldSpec] = &[
     FieldSpec {
+        name: "SessionStart",
+        expected: FieldType::HookArray,
+    },
+    FieldSpec {
+        name: "UserPromptSubmit",
+        expected: FieldType::HookArray,
+    },
+    FieldSpec {
+        name: "ToolActivity",
+        expected: FieldType::HookArray,
+    },
+    FieldSpec {
+        name: "Stop",
+        expected: FieldType::HookArray,
+    },
+    FieldSpec {
         name: "PreToolUse",
         expected: FieldType::HookArray,
     },
