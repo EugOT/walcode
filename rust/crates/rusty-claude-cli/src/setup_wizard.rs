@@ -17,7 +17,7 @@ const PROVIDERS: &[(&str, &str, &str)] = &[
 const PROVIDER_MODELS: &[(&str, &[&str])] = &[
     ("claude-cli", &["opus", "sonnet", "haiku"]),
     ("xai", &["grok", "grok-mini", "grok-2"]),
-    ("codex-cli", &["gpt-5.5", "gpt-5.2", "gpt-5.2-codex"]),
+    ("codex-cli", &["gpt-5.6-sol", "gpt-5.2", "gpt-5.2-codex"]),
     ("dashscope", &["qwen-plus", "qwen-max", "kimi"]),
 ];
 
