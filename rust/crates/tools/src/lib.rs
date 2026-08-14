@@ -10782,7 +10782,7 @@ printf 'pwsh:%s' "$1"
                 kind: "module".to_string(),
                 value: "runtime/task system".to_string(),
             }],
-            model: Some("gpt-5.5".to_string()),
+            model: Some("gpt-5.6-sol".to_string()),
             provider: Some("openai".to_string()),
             permission_profile: Some("workspace-write".to_string()),
             commit_policy: "single commit".to_string(),
@@ -10808,7 +10808,7 @@ printf 'pwsh:%s' "$1"
             output["task_packet"]["acceptance_criteria"][0],
             "task packet is accepted"
         );
-        assert_eq!(output["task_packet"]["model"], "gpt-5.5");
+        assert_eq!(output["task_packet"]["model"], "gpt-5.6-sol");
         assert_eq!(output["task_packet"]["provider"], "openai");
         assert_eq!(
             output["task_packet"]["permission_profile"],

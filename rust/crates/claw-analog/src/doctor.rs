@@ -11,16 +11,24 @@ use claw_analog::{
     AnalogFileConfig, OutputFormat, PermissionMode, Preset, StreamOverride, NDJSON_FORMAT_VERSION,
     NDJSON_SCHEMA,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue};
 
 const ENV_CHECK: &[&str] = &[
+    "XAI_API_KEY",
+    "RAG_BASE_URL",
+    "CLAW_RAG_EMBEDDING_BASE_URL",
+    "CLAW_RAG_EMBEDDING_API_KEY",
+];
+
+const FORBIDDEN_PROVIDER_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
-    "XAI_API_KEY",
-    "RAG_BASE_URL",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "VERTEX_PROJECT",
 ];
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -116,13 +124,13 @@ pub struct DoctorCli {
     /// Profile TOML path (optional; if omitted, uses TOML `profile` or default `~/.claw-analog/profile.toml`).
     #[arg(long, value_name = "PATH")]
     pub profile: Option<PathBuf>,
-    /// TCP connect to host:port from `ANTHROPIC_BASE_URL` (or default API URL); not a full HTTP check.
+    /// TCP connect to approved local/private endpoints only; direct provider API pings are disabled.
     #[arg(long, visible_alias = "mock")]
     pub tcp_ping: bool,
-    /// Skip HTTPS/TLS + auth + quota header checks against configured providers.
+    /// Skip HTTPS/TLS checks against approved local/private endpoints.
     #[arg(long, default_value_t = false)]
     pub no_http_check: bool,
-    /// Also probe the embeddings endpoint for OpenAI-compatible providers (may incur minimal cost).
+    /// Also probe the configured local/private embeddings endpoint.
     #[arg(long, default_value_t = false)]
     pub embeddings_check: bool,
     /// Skip compile check (`cargo check` / `build --release`).
@@ -327,28 +335,24 @@ fn check_env() {
     for name in ENV_CHECK {
         mask_env_line(name);
     }
-    let anthro_ok = std::env::var("ANTHROPIC_API_KEY")
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false)
-        || std::env::var("ANTHROPIC_AUTH_TOKEN")
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-    let openai_ok = std::env::var("OPENAI_API_KEY")
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
     println!();
-    if anthro_ok {
-        println!("Anthropic credentials: OK (API key and/or auth token).");
-    } else {
-        println!("Anthropic credentials: not set — needed for default Claude/Anthropic models.");
+    let mut forbidden_present = false;
+    for name in FORBIDDEN_PROVIDER_ENV {
+        match std::env::var(name) {
+            Ok(value) if !value.trim().is_empty() => {
+                forbidden_present = true;
+                println!(
+                    "{name}: set but ignored — direct provider API runtimes are disabled by policy."
+                );
+            }
+            Ok(_) => println!("{name}: set but empty"),
+            Err(_) => println!("{name}: unset"),
+        }
     }
-    if openai_ok {
-        println!("OpenAI API key: set — use `openai/...` model prefix for that provider.");
-    } else {
-        println!("OpenAI API key: unset — only relevant for `openai/` models.");
-    }
-    if !anthro_ok && !openai_ok {
-        println!("\nNote: neither Anthropic nor OpenAI keys are set; live runs will fail until you export credentials (see USAGE.md).");
+    if forbidden_present {
+        println!(
+            "\nPolicy: use Claude Code CLI for Claude, Codex CLI/app/ACP for GPT-family, and Antigravity for Gemini-family models."
+        );
     }
 }
 
@@ -439,10 +443,6 @@ fn run_cargo_release_build(manifest_dir: Option<&Path>) -> bool {
     }
 }
 
-fn default_anthropic_base() -> String {
-    std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into())
-}
-
 fn parse_host_port(url: &str) -> Result<(String, u16), String> {
     let url = url.trim().trim_end_matches('/');
     let (scheme, rest) = if let Some(r) = url.strip_prefix("https://") {
@@ -468,14 +468,18 @@ fn parse_host_port(url: &str) -> Result<(String, u16), String> {
 }
 
 fn ping_print() {
-    let url = default_anthropic_base();
-    println!("TCP check for ANTHROPIC_BASE_URL (default if unset): {url}");
-    match parse_host_port(&url) {
-        Ok((host, port)) => match tcp_ping(&host, port) {
-            Ok(()) => println!("  reachability: OK ({host}:{port})"),
-            Err(e) => println!("  reachability: FAIL ({host}:{port}) — {e}"),
-        },
-        Err(e) => println!("  could not parse URL: {e}"),
+    println!("TCP check: direct provider API pings are disabled by runtime policy.");
+    if let Ok(base) = std::env::var("RAG_BASE_URL") {
+        let url = base.trim().trim_end_matches('/').to_string();
+        if !url.is_empty() {
+            match parse_host_port(&url) {
+                Ok((host, port)) => match tcp_ping(&host, port) {
+                    Ok(()) => println!("  rag reachability: OK ({host}:{port})"),
+                    Err(e) => println!("  rag reachability: FAIL ({host}:{port}) — {e}"),
+                },
+                Err(e) => println!("  rag URL parse failed: {e}"),
+            }
+        }
     }
     println!("  (HTTP/TLS application data is not validated; this is connect() only.)");
 }
@@ -491,7 +495,7 @@ fn tcp_ping(host: &str, port: u16) -> Result<(), String> {
 }
 
 fn http_checks_print(embeddings_check: bool) {
-    println!("HTTP/TLS checks (auth + TLS validation + quota headers when available):");
+    println!("HTTP/TLS checks (approved local/private endpoints only):");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -502,75 +506,8 @@ fn http_checks_print(embeddings_check: bool) {
     };
 
     rt.block_on(async {
-        // OpenAI-compatible providers (OPENAI_BASE_URL, OPENAI_API_KEY)
-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-            if !key.trim().is_empty() {
-                let base = std::env::var("OPENAI_BASE_URL")
-                    .ok()
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-                let url = openai_models_url(base.as_str());
-                let mut headers = HeaderMap::new();
-                if let Ok(v) = HeaderValue::from_str(format!("Bearer {}", key.trim()).as_str()) {
-                    headers.insert(reqwest::header::AUTHORIZATION, v);
-                }
-                let _ = http_check_and_print("openai", url.as_str(), headers).await;
-
-                if embeddings_check {
-                    let model = std::env::var("OPENAI_EMBEDDING_MODEL")
-                        .ok()
-                        .or_else(|| std::env::var("CLAW_RAG_EMBEDDING_MODEL").ok())
-                        .unwrap_or_else(|| "text-embedding-3-small".to_string());
-                    let eurl = openai_embeddings_url(base.as_str());
-                    let mut eheaders = HeaderMap::new();
-                    if let Ok(v) = HeaderValue::from_str(format!("Bearer {}", key.trim()).as_str())
-                    {
-                        eheaders.insert(reqwest::header::AUTHORIZATION, v);
-                    }
-                    let _ = openai_embeddings_probe(
-                        "openai embeddings",
-                        eurl.as_str(),
-                        &model,
-                        eheaders,
-                    )
-                    .await;
-                } else {
-                    println!("  openai embeddings: skipped (pass --embeddings-check to enable)");
-                }
-            } else {
-                println!("  openai: skipped (OPENAI_API_KEY empty)");
-            }
-        } else {
-            println!("  openai: skipped (OPENAI_API_KEY unset)");
-        }
-
-        // Anthropic (ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY/AUTH_TOKEN)
-        let a_key = std::env::var("ANTHROPIC_API_KEY").ok();
-        let a_tok = std::env::var("ANTHROPIC_AUTH_TOKEN").ok();
-        let a_base = std::env::var("ANTHROPIC_BASE_URL")
-            .ok()
-            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
-        if a_key.as_deref().is_some_and(|s| !s.trim().is_empty())
-            || a_tok.as_deref().is_some_and(|s| !s.trim().is_empty())
-        {
-            let url = anthropic_models_url(a_base.as_str());
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                HeaderName::from_static("anthropic-version"),
-                HeaderValue::from_static("2023-06-01"),
-            );
-            if let Some(k) = a_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                if let Ok(v) = HeaderValue::from_str(k) {
-                    headers.insert(HeaderName::from_static("x-api-key"), v);
-                }
-            } else if let Some(t) = a_tok.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                if let Ok(v) = HeaderValue::from_str(format!("Bearer {t}").as_str()) {
-                    headers.insert(reqwest::header::AUTHORIZATION, v);
-                }
-            }
-            let _ = http_check_and_print("anthropic", url.as_str(), headers).await;
-        } else {
-            println!("  anthropic: skipped (no API key/token)");
-        }
+        println!("  openai: skipped (direct provider API disabled by policy)");
+        println!("  anthropic: skipped (direct provider API disabled by policy)");
 
         // RAG service (RAG_BASE_URL) — just basic health + stats.
         if let Ok(base) = std::env::var("RAG_BASE_URL") {
@@ -584,32 +521,57 @@ fn http_checks_print(embeddings_check: bool) {
                     http_check_and_print("rag stats", &format!("{base}/v1/stats"), headers).await;
             }
         }
+        if embeddings_check {
+            match (
+                std::env::var("CLAW_RAG_EMBEDDING_BASE_URL"),
+                std::env::var("CLAW_RAG_EMBEDDING_API_KEY"),
+            ) {
+                (Ok(base), Ok(key)) if !base.trim().is_empty() && !key.trim().is_empty() => {
+                    let base = base.trim().trim_end_matches('/');
+                    if is_forbidden_provider_url(base) {
+                        println!(
+                            "  embeddings: skipped (direct provider endpoint disabled by policy)"
+                        );
+                    } else {
+                        let model = std::env::var("CLAW_RAG_EMBEDDING_MODEL")
+                            .unwrap_or_else(|_| "text-embedding-3-small".to_string());
+                        let mut headers = HeaderMap::new();
+                        if let Ok(v) =
+                            HeaderValue::from_str(format!("Bearer {}", key.trim()).as_str())
+                        {
+                            headers.insert(reqwest::header::AUTHORIZATION, v);
+                        }
+                        let _ = openai_embeddings_probe(
+                            "embeddings",
+                            &format!("{base}/embeddings"),
+                            &model,
+                            headers,
+                        )
+                        .await;
+                    }
+                }
+                _ => println!(
+                    "  embeddings: skipped (set CLAW_RAG_EMBEDDING_BASE_URL and CLAW_RAG_EMBEDDING_API_KEY)"
+                ),
+            }
+        } else {
+            println!("  embeddings: skipped (pass --embeddings-check to enable)");
+        }
     });
 
     println!("  (TLS validation is performed by the HTTP client; certificate errors surface as request failures.)");
 }
 
-fn openai_models_url(base: &str) -> String {
-    let b = base.trim().trim_end_matches('/');
-    if b.ends_with("/v1") {
-        format!("{b}/models")
-    } else {
-        format!("{b}/v1/models")
-    }
-}
-
-fn openai_embeddings_url(base: &str) -> String {
-    let b = base.trim().trim_end_matches('/');
-    if b.ends_with("/v1") {
-        format!("{b}/embeddings")
-    } else {
-        format!("{b}/v1/embeddings")
-    }
-}
-
-fn anthropic_models_url(base: &str) -> String {
-    let b = base.trim().trim_end_matches('/');
-    format!("{b}/v1/models?limit=1")
+fn is_forbidden_provider_url(base: &str) -> bool {
+    let lower = base.to_ascii_lowercase();
+    [
+        "api.openai.com",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com",
+    ]
+    .iter()
+    .any(|host| lower.contains(host))
 }
 
 async fn http_check_and_print(label: &str, url: &str, headers: HeaderMap) -> Result<(), ()> {
@@ -726,8 +688,17 @@ mod tests {
             ("127.0.0.1".into(), 8080)
         );
         assert_eq!(
-            parse_host_port("https://api.anthropic.com").unwrap(),
-            ("api.anthropic.com".into(), 443)
+            parse_host_port("https://rag.example.com").unwrap(),
+            ("rag.example.com".into(), 443)
         );
+    }
+
+    #[test]
+    fn forbidden_provider_urls_are_detected() {
+        assert!(is_forbidden_provider_url("https://api.openai.com/v1"));
+        assert!(is_forbidden_provider_url(
+            "https://generativelanguage.googleapis.com/v1beta"
+        ));
+        assert!(!is_forbidden_provider_url("http://127.0.0.1:11434/v1"));
     }
 }
