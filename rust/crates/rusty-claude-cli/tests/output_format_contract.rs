@@ -3223,6 +3223,7 @@ fn short_p_flag_swallows_no_flags_755() {
         .args(["-p", "hello", "--output-format", "json"])
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
         .output()
         .expect("claw -p should run");
     assert!(
@@ -3569,7 +3570,7 @@ fn config_parse_error_has_typed_error_kind_and_hint_764() {
 #[test]
 fn login_logout_removed_subcommands_have_error_kind_and_hint_765() {
     // #765: `claw login` and `claw logout` are removed; JSON envelope must carry
-    // error_kind:removed_subcommand + non-null hint pointing to the env var migration.
+    // error_kind:removed_subcommand + non-null hint pointing to the approved CLI auth path.
     // Before fix: single-line error string → error_kind:"unknown" + hint:null.
     let root = unique_temp_dir("login-logout-removed-765");
     fs::create_dir_all(&root).expect("temp dir should exist");
@@ -3598,8 +3599,8 @@ fn login_logout_removed_subcommands_have_error_kind_and_hint_765() {
             "claw {subcmd} must return non-null hint (#765), got: {hint:?}"
         );
         assert!(
-            hint.contains("ANTHROPIC_API_KEY") || hint.contains("ANTHROPIC_AUTH_TOKEN"),
-            "claw {subcmd} hint must mention the env var migration path, got: {hint:?}"
+            hint.contains("Claude Code CLI auth") || hint.contains("approved Claude agent runtime"),
+            "claw {subcmd} hint must mention the approved CLI auth path, got: {hint:?}"
         );
     }
 }
@@ -5107,6 +5108,7 @@ fn skills_lifecycle_errors_have_typed_local_json_795_431() {
         ("HOME", home.to_str().expect("utf8 home")),
         ("ANTHROPIC_API_KEY", ""),
         ("ANTHROPIC_AUTH_TOKEN", ""),
+        ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
         ("OPENAI_API_KEY", ""),
     ];
 
@@ -5793,6 +5795,7 @@ fn compact_flag_missing_argument_and_shorthand_prompt_contract_435() {
         ("HOME", home.to_str().expect("home utf8")),
         ("ANTHROPIC_API_KEY", ""),
         ("ANTHROPIC_AUTH_TOKEN", ""),
+        ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9"),
         ("OPENAI_API_KEY", ""),
     ];
 

@@ -60,6 +60,7 @@ fn run_claw_repl(
         .current_dir(cwd)
         .env_clear()
         .env("ANTHROPIC_API_KEY", "test-compact-repl-key")
+        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
         .env("CLAW_CONFIG_HOME", config_home)
         .env("HOME", home)
         .env("NO_COLOR", "1")

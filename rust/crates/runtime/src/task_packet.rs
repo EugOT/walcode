@@ -243,7 +243,7 @@ mod tests {
                 kind: "file".to_string(),
                 value: "rust/crates/runtime/src/task_packet.rs".to_string(),
             }],
-            model: Some("gpt-5.6-sol".to_string()),
+            model: Some("gpt-5.5".to_string()),
             provider: Some("openai".to_string()),
             permission_profile: Some("workspace-write".to_string()),
             commit_policy: "single verified commit".to_string(),
@@ -336,7 +336,7 @@ mod tests {
             "packet can launch without pane scraping"
         );
         assert_eq!(json["resources"][0]["kind"], "file");
-        assert_eq!(json["model"], "gpt-5.6-sol");
+        assert_eq!(json["model"], "gpt-5.5");
         assert_eq!(json["provider"], "openai");
         assert_eq!(json["permission_profile"], "workspace-write");
         assert_eq!(json["recovery_policy"], "retry once then escalate");

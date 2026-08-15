@@ -394,6 +394,82 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     ProviderKind::Anthropic
 }
 
+fn is_local_runtime_policy_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
+}
+
+fn is_forbidden_runtime_policy_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    const FORBIDDEN_HOSTS: &[&str] = &[
+        "api.openai.com",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com",
+        "openrouter.ai",
+    ];
+    FORBIDDEN_HOSTS.iter().any(|forbidden| {
+        host.eq_ignore_ascii_case(forbidden)
+            || host
+                .to_ascii_lowercase()
+                .ends_with(&format!(".{forbidden}"))
+    })
+}
+
+#[must_use]
+pub fn provider_allowed_by_runtime_policy(model: &str) -> bool {
+    let resolved_model = resolve_model_alias(model);
+    let metadata = metadata_for_model(&resolved_model);
+    let kind = metadata.as_ref().map_or_else(
+        || detect_provider_kind(&resolved_model),
+        |meta| meta.provider,
+    );
+
+    match kind {
+        ProviderKind::Anthropic => std::env::var("ANTHROPIC_BASE_URL").is_ok_and(|base_url| {
+            is_local_runtime_policy_base_url(&base_url)
+                && !is_forbidden_runtime_policy_base_url(&base_url)
+        }),
+        ProviderKind::Xai => true,
+        ProviderKind::OpenAi => {
+            if std::env::var_os("OLLAMA_HOST").is_some() {
+                return true;
+            }
+
+            if let Some(meta) = metadata {
+                if meta.auth_env == "DASHSCOPE_API_KEY" {
+                    return true;
+                }
+                if meta.auth_env == "OPENAI_API_KEY" {
+                    let base_url = std::env::var(meta.base_url_env)
+                        .unwrap_or_else(|_| meta.default_base_url.to_string());
+                    return is_local_runtime_policy_base_url(&base_url)
+                        && !is_forbidden_runtime_policy_base_url(&base_url);
+                }
+            }
+
+            std::env::var("OPENAI_BASE_URL").is_ok_and(|base_url| {
+                is_local_runtime_policy_base_url(&base_url)
+                    && !is_forbidden_runtime_policy_base_url(&base_url)
+            })
+        }
+    }
+}
+
 #[must_use]
 pub const fn model_family_identity_for_kind(kind: ProviderKind) -> runtime::ModelFamilyIdentity {
     match kind {
@@ -837,7 +913,6 @@ pub(crate) fn dotenv_value(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::sync::{Mutex, OnceLock};
 
     use serde_json::json;
 
@@ -850,9 +925,9 @@ mod tests {
         anthropic_missing_credentials, anthropic_missing_credentials_hint, detect_provider_kind,
         load_dotenv_file, max_tokens_for_model, max_tokens_for_model_with_override,
         model_family_identity_for, model_family_identity_for_kind, model_token_limit, parse_dotenv,
-        preflight_message_request, provider_capabilities_for_model,
-        provider_diagnostics_for_request, resolve_model_alias, ProviderFeatureSupport,
-        ProviderKind, ProviderWireProtocol,
+        preflight_message_request, provider_allowed_by_runtime_policy,
+        provider_capabilities_for_model, provider_diagnostics_for_request, resolve_model_alias,
+        ProviderFeatureSupport, ProviderKind, ProviderWireProtocol,
     };
 
     /// Serializes every test in this module that mutates process-wide
@@ -860,10 +935,7 @@ mod tests {
     /// each other's partially-applied state while probing the foreign
     /// provider credential sniffer.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::test_env::lock()
     }
 
     /// Snapshot-restore guard for a single environment variable. Captures
@@ -909,6 +981,76 @@ mod tests {
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::Anthropic
         );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_direct_provider_families() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openai-key"));
+        let _openai_base = EnvVarGuard::set("OPENAI_BASE_URL", None);
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        assert!(!provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+        assert!(!provider_allowed_by_runtime_policy("openai/gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn runtime_policy_allows_loopback_anthropic_mocks() {
+        let _lock = env_lock();
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", Some("http://127.0.0.1:3456"));
+
+        assert!(provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+    }
+
+    #[test]
+    fn runtime_policy_blocks_openrouter_compatible_endpoint() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openrouter-key"));
+        let _openai_base =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("https://openrouter.ai/api/v1"));
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        assert!(!provider_allowed_by_runtime_policy("local/qwen2.5-coder"));
+    }
+
+    #[test]
+    fn runtime_policy_rejects_loopback_lookalike_hosts() {
+        let _lock = env_lock();
+        let _anthropic_base = EnvVarGuard::set(
+            "ANTHROPIC_BASE_URL",
+            Some("http://localhost.attacker.test:3456"),
+        );
+        assert!(!provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+
+        let _anthropic_base = EnvVarGuard::set(
+            "ANTHROPIC_BASE_URL",
+            Some("http://127.0.0.1.attacker.test:3456"),
+        );
+        assert!(!provider_allowed_by_runtime_policy("claude-sonnet-4-6"));
+
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("local-placeholder"));
+        let _openai_base = EnvVarGuard::set(
+            "OPENAI_BASE_URL",
+            Some("http://api.openai.com.evil.test/v1"),
+        );
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+        assert!(!provider_allowed_by_runtime_policy("local/qwen2.5-coder"));
+    }
+
+    #[test]
+    fn runtime_policy_allows_approved_non_forbidden_paths() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("local-placeholder"));
+        let _openai_base = EnvVarGuard::set("OPENAI_BASE_URL", Some("http://127.0.0.1:11434/v1"));
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+        let _dashscope_key = EnvVarGuard::set("DASHSCOPE_API_KEY", Some("test-dashscope-key"));
+        let _xai_key = EnvVarGuard::set("XAI_API_KEY", Some("test-xai-key"));
+
+        assert!(provider_allowed_by_runtime_policy("local/qwen2.5-coder"));
+        assert!(provider_allowed_by_runtime_policy("qwen-plus"));
+        assert!(provider_allowed_by_runtime_policy("grok-3"));
     }
 
     #[test]

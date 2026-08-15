@@ -377,7 +377,7 @@ mod tests {
                 kind: "module".to_string(),
                 value: "runtime/task system".to_string(),
             }],
-            model: Some("gpt-5.6-sol".to_string()),
+            model: Some("gpt-5.5".to_string()),
             provider: Some("openai".to_string()),
             permission_profile: Some("workspace-write".to_string()),
             commit_policy: "single commit".to_string(),

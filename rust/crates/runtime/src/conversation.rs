@@ -321,14 +321,26 @@ where
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     pub fn run_turn(
         &mut self,
         user_input: impl Into<String>,
-        mut prompter: Option<&mut dyn PermissionPrompter>,
+        prompter: Option<&mut dyn PermissionPrompter>,
     ) -> Result<TurnSummary, RuntimeError> {
         let user_input = user_input.into();
+        let _ = self
+            .hook_runner
+            .run_user_prompt_submit(user_input.chars().count());
+        let result = self.run_turn_inner(user_input, prompter);
+        let _ = self.hook_runner.run_stop(result.is_err());
+        result
+    }
 
+    #[allow(clippy::too_many_lines)]
+    fn run_turn_inner(
+        &mut self,
+        user_input: String,
+        mut prompter: Option<&mut dyn PermissionPrompter>,
+    ) -> Result<TurnSummary, RuntimeError> {
         // ROADMAP #38: Session-health canary - probe if context was compacted
         if self.session.compaction.is_some() {
             if let Err(error) = self.run_session_health_probe() {
@@ -558,6 +570,11 @@ where
         &mut self.session
     }
 
+    /// Emit the process/session start boundary for CLI adapters.
+    pub fn emit_session_start(&self, session_id: &str) {
+        let _ = self.hook_runner.run_session_start(session_id);
+    }
+
     #[must_use]
     pub fn fork_session(&self, branch_name: Option<String>) -> Session {
         self.session.fork(branch_name)
@@ -644,16 +661,20 @@ where
     }
 
     fn record_tool_finished(&self, iteration: usize, result_message: &ConversationMessage) {
-        let Some(session_tracer) = &self.session_tracer else {
-            return;
-        };
-
         let Some(ContentBlock::ToolResult {
             tool_name,
             is_error,
             ..
         }) = result_message.blocks.first()
         else {
+            return;
+        };
+
+        let _ = self
+            .hook_runner
+            .run_tool_activity(tool_name, "completed", *is_error);
+
+        let Some(session_tracer) = &self.session_tracer else {
             return;
         };
 
