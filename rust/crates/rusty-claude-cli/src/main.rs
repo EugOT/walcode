@@ -5310,7 +5310,11 @@ impl HookValidationSummary {
     fn from_config(config: &runtime::RuntimeConfig) -> Self {
         let hooks = config.hooks();
         Self {
-            valid_count: hooks.pre_tool_use_entries().len()
+            valid_count: hooks.session_start_entries().len()
+                + hooks.user_prompt_submit_entries().len()
+                + hooks.tool_activity_entries().len()
+                + hooks.stop_entries().len()
+                + hooks.pre_tool_use_entries().len()
                 + hooks.post_tool_use_entries().len()
                 + hooks.post_tool_use_failure_entries().len(),
             invalid_hooks: hooks.invalid_hooks().to_vec(),
@@ -7672,6 +7676,7 @@ impl LiveCli {
             permission_mode,
             None,
         )?;
+        runtime.emit_session_start(&session.id);
         let cli = Self {
             model,
             allowed_tools,
@@ -12611,24 +12616,18 @@ impl AnthropicRuntimeClient {
         // routing (`openai/`, `gpt-`, `grok`, `qwen/`) wins over
         // env-var presence.
         //
-        // For Anthropic we build the client directly instead of going
-        // through `ApiProviderClient::from_model_with_anthropic_auth`
-        // so we can explicitly apply `api::read_base_url()` — that
-        // reads `ANTHROPIC_BASE_URL` and is required for the local
-        // mock-server test harness
-        // (`crates/rusty-claude-cli/tests/compact_output.rs`) to point
-        // claw at its fake Anthropic endpoint. We also attach a
-        // session-scoped prompt cache on the Anthropic path; the
-        // prompt cache is Anthropic-only so non-Anthropic variants
-        // skip it.
+        // The shared API client enforces the runtime policy and still honors
+        // local loopback ANTHROPIC_BASE_URL mocks after the policy predicate
+        // has approved the route.
         let resolved_model = api::resolve_model_alias(&model);
+        if !api::provider_allowed_by_runtime_policy(&resolved_model) {
+            return Err(format!(
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
+            )
+            .into());
+        }
         let client = match detect_provider_kind(&resolved_model) {
-            ProviderKind::Anthropic => {
-                return Err(Box::new(api::ApiError::Auth(
-                    "direct Anthropic API runtime disabled by policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
-                )));
-            }
-            ProviderKind::Xai | ProviderKind::OpenAi => {
+            ProviderKind::Anthropic | ProviderKind::Xai | ProviderKind::OpenAi => {
                 // The api crate's `ProviderClient::from_model_with_anthropic_auth`
                 // with `None` for the anthropic auth routes via
                 // `detect_provider_kind` and builds an
@@ -12641,7 +12640,8 @@ impl AnthropicRuntimeClient {
                 // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
                 ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
             }
-        };
+        }
+        .with_prompt_cache(api::PromptCache::new(session_id));
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
             client,
@@ -14360,6 +14360,28 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tools::GlobalToolRegistry;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn registry_with_plugin_tool() -> GlobalToolRegistry {
         GlobalToolRegistry::with_plugin_tools(vec![PluginTool::new(
             "plugin-demo@external",
@@ -14823,7 +14845,7 @@ mod tests {
         }
         std::fs::remove_dir_all(config_home).expect("temp config home should clean up");
 
-        assert!(error.to_string().contains("ANTHROPIC_API_KEY"));
+        assert!(error.to_string().contains("Claude Code CLI auth"));
     }
 
     #[test]
@@ -17411,8 +17433,10 @@ mod tests {
     #[test]
     fn startup_banner_mentions_workflow_completions() {
         let _guard = env_lock();
-        // Inject dummy credentials so LiveCli can construct without real Anthropic key
-        std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
+        // Use a loopback endpoint so startup-only construction does not enable
+        // direct provider API access.
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-dummy-key-for-banner-test");
+        let _base_url = EnvVarGuard::set("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
         let root = temp_dir();
         fs::create_dir_all(&root).expect("root dir");
 
@@ -17431,7 +17455,6 @@ mod tests {
         assert!(banner.contains("workflow completions"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
-        std::env::remove_var("ANTHROPIC_API_KEY");
     }
 
     #[test]
@@ -19417,9 +19440,11 @@ UU conflicted.rs",
         // set/remove ANTHROPIC_API_KEY do not race with this test.
         let _guard = env_lock();
         let config_home = temp_dir();
-        // Inject a dummy API key so runtime construction succeeds without real credentials.
-        // This test only exercises plugin lifecycle (init/shutdown), never calls the API.
-        std::env::set_var("ANTHROPIC_API_KEY", "test-dummy-key-for-plugin-lifecycle");
+        // Use a loopback endpoint so runtime construction succeeds without
+        // enabling direct provider API access. This test only exercises
+        // plugin lifecycle (init/shutdown), never calls the API.
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-dummy-key-for-plugin-lifecycle");
+        let _base_url = EnvVarGuard::set("ANTHROPIC_BASE_URL", "http://127.0.0.1:3456");
         let workspace = temp_dir();
         let source_root = temp_dir();
         fs::create_dir_all(&config_home).expect("config home");

@@ -23,10 +23,24 @@ impl ProviderClient {
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        let _ = anthropic_auth;
+        let policy_allows = providers::provider_allowed_by_runtime_policy(&resolved_model);
+        if anthropic_auth.is_some() && !policy_allows {
+            return Err(ApiError::Auth(format!(
+                "provider path for model '{resolved_model}' is disabled by runtime policy; use Claude Code CLI, Codex CLI/app/ACP, Antigravity, or a local approved endpoint"
+            )));
+        }
         match providers::detect_provider_kind(&resolved_model) {
+            ProviderKind::Anthropic if policy_allows => {
+                let auth = match anthropic_auth {
+                    Some(auth) => auth,
+                    None => AuthSource::from_env_or_saved()?,
+                };
+                Ok(Self::Anthropic(
+                    AnthropicClient::from_auth(auth).with_base_url(anthropic::read_base_url()),
+                ))
+            }
             ProviderKind::Anthropic => Err(ApiError::Auth(
-                "direct Anthropic API runtime disabled by policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
+                "direct Anthropic API runtime disabled by runtime policy; use Claude Code CLI or an approved Claude agent runtime".to_string(),
             )),
             ProviderKind::Xai => Ok(Self::Xai(OpenAiCompatClient::from_env(
                 OpenAiCompatConfig::xai(),
@@ -47,10 +61,12 @@ impl ProviderClient {
                         Some(meta) if meta.auth_env == "DASHSCOPE_API_KEY" => {
                             OpenAiCompatConfig::dashscope()
                         }
-                        _ if openai_base_url_is_local() => OpenAiCompatConfig::openai(),
+                        _ if openai_base_url_is_local() && policy_allows => {
+                            OpenAiCompatConfig::openai()
+                        }
                         _ => {
                             return Err(ApiError::Auth(
-                                "direct OpenAI API runtime disabled by policy; use Codex CLI/app/ACP or a local/private compatible endpoint".to_string(),
+                                "direct OpenAI API runtime disabled by runtime policy; use Codex CLI/app/ACP or a local/private compatible endpoint".to_string(),
                             ));
                         }
                     };
@@ -124,20 +140,17 @@ fn openai_base_url_is_local() -> bool {
     let Ok(raw) = std::env::var("OPENAI_BASE_URL") else {
         return false;
     };
-    let lower = raw.trim().to_ascii_lowercase();
-    lower.starts_with("http://127.")
-        || lower.starts_with("http://localhost")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("http://0.0.0.0")
-        || lower.starts_with("http://10.")
-        || lower.starts_with("http://192.168.")
-        || lower.starts_with("http://172.16.")
-        || lower.starts_with("http://172.17.")
-        || lower.starts_with("http://172.18.")
-        || lower.starts_with("http://172.19.")
-        || lower.starts_with("http://172.2")
-        || lower.starts_with("http://172.30.")
-        || lower.starts_with("http://172.31.")
+    let Ok(url) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback() || addr.is_unspecified())
 }
 
 #[derive(Debug)]
@@ -178,19 +191,14 @@ pub fn read_xai_base_url() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
-
-    use super::ProviderClient;
+    use super::{openai_base_url_is_local, ProviderClient};
     use crate::providers::{detect_provider_kind, resolve_model_alias, ProviderKind};
 
     /// Serializes every test in this module that mutates process-wide
     /// environment variables so concurrent test threads cannot observe
     /// each other's partially-applied state.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        crate::test_env::lock()
     }
 
     #[test]
@@ -206,6 +214,60 @@ mod tests {
         assert_eq!(
             detect_provider_kind("claude-sonnet-4-6"),
             ProviderKind::Anthropic
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_explicit_anthropic_auth() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_token = EnvVarGuard::set("ANTHROPIC_AUTH_TOKEN", None);
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
+
+        let err = ProviderClient::from_model_with_anthropic_auth(
+            "claude-sonnet-4-6",
+            Some(crate::providers::anthropic::AuthSource::ApiKey(
+                "test-anthropic-key".into(),
+            )),
+        )
+        .expect_err("direct Anthropic provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_direct_openai_default_endpoint() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openai-key"));
+        let _openai_base = EnvVarGuard::set("OPENAI_BASE_URL", None);
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        let err = ProviderClient::from_model("openai/gpt-4.1-mini")
+            .expect_err("direct OpenAI provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_policy_blocks_openrouter_compatible_endpoint() {
+        let _lock = env_lock();
+        let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", Some("test-openrouter-key"));
+        let _openai_base =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("https://openrouter.ai/api/v1"));
+        let _ollama = EnvVarGuard::set("OLLAMA_HOST", None);
+
+        let err = ProviderClient::from_model("local/qwen2.5-coder")
+            .expect_err("OpenRouter-compatible provider path must be blocked by runtime policy");
+
+        assert!(
+            err.to_string().contains("disabled by runtime policy"),
+            "unexpected error: {err}"
         );
     }
 
@@ -236,6 +298,24 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    #[test]
+    fn openai_base_url_local_check_rejects_loopback_lookalike_hosts() {
+        let _lock = env_lock();
+
+        let _lookalike =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("http://127.0.0.1.attacker.test/v1"));
+        assert!(!openai_base_url_is_local());
+
+        drop(_lookalike);
+        let _localhost =
+            EnvVarGuard::set("OPENAI_BASE_URL", Some("http://localhost.attacker.test/v1"));
+        assert!(!openai_base_url_is_local());
+
+        drop(_localhost);
+        let _loopback = EnvVarGuard::set("OPENAI_BASE_URL", Some("http://127.0.0.1:11434/v1"));
+        assert!(openai_base_url_is_local());
     }
 
     #[test]
@@ -292,12 +372,27 @@ mod tests {
     fn direct_anthropic_provider_is_disabled_by_policy() {
         let _lock = env_lock();
         let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", None);
 
         let err = ProviderClient::from_model("anthropic/claude-sonnet-4-6")
             .expect_err("direct Anthropic provider should be disabled");
         assert!(err
             .to_string()
             .contains("direct Anthropic API runtime disabled"));
+    }
+
+    #[test]
+    fn local_anthropic_base_url_routes_mock_provider() {
+        let _lock = env_lock();
+        let _anthropic_key = EnvVarGuard::set("ANTHROPIC_API_KEY", Some("test-anthropic-key"));
+        let _anthropic_base = EnvVarGuard::set("ANTHROPIC_BASE_URL", Some("http://127.0.0.1:3456"));
+
+        let client = ProviderClient::from_model("anthropic/claude-sonnet-4-6")
+            .expect("loopback Anthropic-compatible mocks should be allowed");
+        match client {
+            ProviderClient::Anthropic(_) => {}
+            other => panic!("Expected ProviderClient::Anthropic for local mock, got: {other:?}"),
+        }
     }
 
     #[test]

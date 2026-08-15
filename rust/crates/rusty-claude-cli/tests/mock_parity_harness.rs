@@ -13,6 +13,82 @@ use serde_json::{json, Value};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn lifecycle_hooks_keep_mock_parity_payloads_content_free() {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should build");
+    let server = runtime
+        .block_on(MockAnthropicService::spawn())
+        .expect("mock service should start");
+    let workspace = HarnessWorkspace::new(unique_temp_dir("lifecycle-hooks"));
+    workspace.create().expect("workspace should exist");
+    prepare_read_fixture(&workspace);
+
+    let log_path = workspace.root.join("lifecycle.jsonl");
+    let capture_command = format!(
+        "IFS= read -r payload || true; printf '%s\\n' \"$payload\" >> '{}'",
+        log_path.display()
+    );
+    fs::write(
+        workspace.config_home.join("settings.json"),
+        serde_json::to_vec_pretty(&json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": capture_command.clone()}]}],
+                "UserPromptSubmit": [{"hooks": [{"type": "command", "command": capture_command.clone()}]}],
+                "ToolActivity": [{"matcher": "read_file", "hooks": [{"type": "command", "command": capture_command.clone()}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": capture_command}]}],
+            }
+        }))
+        .expect("settings should serialize"),
+    )
+    .expect("settings should write");
+
+    let run = run_case(
+        ScenarioCase {
+            name: "read_file_roundtrip",
+            permission_mode: "read-only",
+            allowed_tools: Some("read_file"),
+            stdin: None,
+            prepare: prepare_noop,
+            assert: assert_read_file_roundtrip,
+            extra_env: None,
+            resume_session: None,
+        },
+        &workspace,
+        &server.base_url(),
+    );
+    assert_read_file_roundtrip(&workspace, &run);
+
+    let payloads = fs::read_to_string(&log_path)
+        .expect("lifecycle log should exist")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("lifecycle line should be JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        payloads
+            .iter()
+            .map(|payload| payload["hook_event_name"].as_str().expect("event name"))
+            .collect::<Vec<_>>(),
+        ["SessionStart", "UserPromptSubmit", "ToolActivity", "Stop"]
+    );
+    let rendered = serde_json::to_string(&payloads).expect("payloads should serialize");
+    for forbidden in [
+        "test-parity-key",
+        "fixture.txt",
+        SCENARIO_PREFIX,
+        "tool_input",
+        "tool_output",
+        "tool_error",
+        "api_key",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "lifecycle payload leaked {forbidden}: {rendered}"
+        );
+    }
+
+    fs::remove_dir_all(&workspace.root).expect("workspace cleanup should succeed");
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn clean_env_cli_reaches_mock_anthropic_service_across_scripted_parity_scenarios() {
     let manifest_entries = load_scenario_manifest();
