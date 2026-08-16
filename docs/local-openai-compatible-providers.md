@@ -97,6 +97,27 @@ export OPENAI_API_KEY="local-dev-token"
 claw --model "Qwen/Qwen2.5-Coder-7B-Instruct" prompt "Reply exactly HELLO_WORLD_123"
 ```
 
+## mlx-lm (Apple Silicon)
+
+On Apple Silicon, [mlx-lm](https://github.com/ml-explore/mlx-lm) gives meaningfully faster inference than llama.cpp-based backends for models under roughly 14B parameters.
+
+Install and start the server:
+
+```bash
+pipx install mlx-lm
+mlx_lm.server --model mlx-community/Qwen2.5-Coder-7B-Instruct-4bit --port 8080
+```
+
+Then route Claw to it:
+
+```bash
+export OPENAI_BASE_URL="http://127.0.0.1:8080/v1"
+export OPENAI_API_KEY="local-dev-token"
+claw --model "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit" prompt "Reply exactly HELLO_WORLD_123"
+```
+
+mlx-lm serves models under their full Hugging Face repo ID. Use the exact `id` field from `curl $OPENAI_BASE_URL/models` for `--model`. A bare name like `qwen2.5-coder-7b-instruct` will fail model resolution before the request ever reaches the server.
+
 ## Local skills install from disk
 
 Skills are discovered from Claw skill roots such as `.claw/skills/` in a workspace and `~/.claw/skills/` for user-level installs. Legacy `.codex/skills/` roots may also be scanned for compatibility, but new local Claw projects should prefer `.claw/skills/`.
@@ -149,3 +170,5 @@ Offline install checklist:
 | Plain prompt works but tools fail | Confirm the model/server supports OpenAI-compatible tool calls and response shapes. |
 | Skill says installed but `/skills <name>` fails | Check `/skills list` for the discovered name and source; verify provider credentials separately with `claw doctor`. |
 | A local docs/log file contains secrets | Redact it before using `@path` file context or attaching it to an issue. |
+| `404 Repository Not Found` from huggingface.co when running `claw` | The `--model` value isn't a full Hugging Face repo ID. Use the exact `id` field from `curl $OPENAI_BASE_URL/models`, not a bare model name. |
+| mlx-lm output includes a trailing `<|im_end|>`, or generation runs long | Unfixed mlx-lm bug ([#973](https://github.com/ml-explore/mlx-lm/issues/973), closed without a merge). Set `eos_token_id` in the cached `generation_config.json` (or `config.json`) to the real end-of-turn token. |

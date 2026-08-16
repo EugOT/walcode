@@ -183,6 +183,13 @@ class PortingWorkspaceTests(unittest.TestCase):
                 self.assertIn("Mirrored command 'plugin'", result.stdout)
                 self.assertNotIn('Unknown mirrored command', result.stdout)
 
+    def test_command_lookup_normalizes_user_input_whitespace(self) -> None:
+        from src.commands import execute_command, find_commands, get_command
+
+        self.assertEqual('plugin', get_command('  PLUGINS  ').name)
+        self.assertEqual('review', find_commands('  review  ', limit=1)[0].name)
+        self.assertIn("Mirrored command 'plugin'", execute_command('  marketplace  ', 'browse').message)
+
     def test_route_plugin_slash_commands_match_commands(self) -> None:
         prompts = ('/plugin list', '/plugins list', '/marketplace browse', '/reload-plugins')
         for prompt in prompts:
